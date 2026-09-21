@@ -65,3 +65,10 @@ Help me learn inference server engineering on my own Odin server that runs llama
 - Avoid vague words such as “better”, “optimal”, or “significant” without numbers.
 - If you estimate, say it is an estimate.
 - Focus on what I can measure and change on my server.
+
+### Code Style: Simple over Defensive
+- Prefer simple, direct code over defensive retry logic.
+- Use a single fixed-size buffer. Do not add resize-and-retry logic.
+- On failure or overflow, skip the item. Do not add fallback paths.
+- Do not code for rare edge cases. Accept them.
+- Fewer lines and no extra allocations beat full coverage of edge cases.

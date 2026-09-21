@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:time"
 
 RUNS_PER_PROMPT :: 5
 MAX_TOKENS :: 64
@@ -77,5 +78,103 @@ run_benchmark :: proc(index: int, message: string) {
 		RUNS_PER_PROMPT,
 		prefill_size,
 		final_size,
+	)
+}
+
+run_scheduler_benchmark :: proc(
+	work_queue: []Work_Item,
+	slot_count: int,
+	rounds: int,
+) -> (
+	avg_tok_s: f64,
+	avg_latency_ms: f64,
+) {
+	tok_s_sum: f64
+	latency_ms_sum: f64
+
+	for round in 0 ..< rounds {
+		fmt.printfln("\n=== %d-slot scheduler, round %d/%d ===", slot_count, round + 1, rounds)
+
+		stopwatch: time.Stopwatch
+		time.stopwatch_start(&stopwatch)
+		tokens, completed, total_latency_ms := run_scheduler(work_queue, slot_count)
+		time.stopwatch_stop(&stopwatch)
+
+		wall_clock := time.duration_seconds(time.stopwatch_duration(stopwatch))
+		tok_s := f64(tokens) / wall_clock
+		round_avg_latency_ms := total_latency_ms / f64(completed)
+		tok_s_sum += tok_s
+		latency_ms_sum += round_avg_latency_ms
+
+		fmt.printfln("Wall clock: %.2f seconds", wall_clock)
+		fmt.printfln(
+			"%d/%d requests, %.2f tok/s, avg latency %.0fms",
+			completed,
+			len(work_queue),
+			tok_s,
+			round_avg_latency_ms,
+		)
+	}
+
+	return tok_s_sum / f64(rounds), latency_ms_sum / f64(rounds)
+}
+
+run_unbounded_benchmark :: proc(
+	work_queue: []Work_Item,
+	rounds: int,
+) -> (
+	avg_tok_s: f64,
+	avg_latency_ms: f64,
+) {
+	tok_s_sum: f64
+	latency_ms_sum: f64
+
+	for round in 0 ..< rounds {
+		fmt.printfln("\n=== Unbounded, round %d/%d ===", round + 1, rounds)
+
+		stopwatch: time.Stopwatch
+		time.stopwatch_start(&stopwatch)
+		tokens, completed, total_latency_ms := run_unbounded(work_queue)
+		time.stopwatch_stop(&stopwatch)
+
+		wall_clock := time.duration_seconds(time.stopwatch_duration(stopwatch))
+		tok_s := f64(tokens) / wall_clock
+		round_avg_latency_ms := total_latency_ms / f64(completed)
+		tok_s_sum += tok_s
+		latency_ms_sum += round_avg_latency_ms
+
+		fmt.printfln("Wall clock: %.2f seconds", wall_clock)
+		fmt.printfln(
+			"%d/%d requests, %.2f tok/s, avg latency %.0fms",
+			completed,
+			len(work_queue),
+			tok_s,
+			round_avg_latency_ms,
+		)
+	}
+
+	return tok_s_sum / f64(rounds), latency_ms_sum / f64(rounds)
+}
+
+run_all_benchmarks :: proc(work_queue: []Work_Item, rounds: int) {
+	tok_s_2, latency_ms_2 := run_scheduler_benchmark(work_queue, 2, rounds)
+	tok_s_4, latency_ms_4 := run_scheduler_benchmark(work_queue, 4, rounds)
+	tok_s_6, latency_ms_6 := run_scheduler_benchmark(work_queue, 6, rounds)
+	tok_s_8, latency_ms_8 := run_scheduler_benchmark(work_queue, 8, rounds)
+	tok_s_12, latency_ms_12 := run_scheduler_benchmark(work_queue, 12, rounds)
+	tok_s_20, latency_ms_20 := run_scheduler_benchmark(work_queue, 20, rounds)
+	unbounded_tok_s, unbounded_latency_ms := run_unbounded_benchmark(work_queue, rounds)
+
+	fmt.printfln("\n=== Averages over %d rounds ===", rounds)
+	fmt.printfln("2-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_2, latency_ms_2)
+	fmt.printfln("4-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_4, latency_ms_4)
+	fmt.printfln("6-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_6, latency_ms_6)
+	fmt.printfln("8-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_8, latency_ms_8)
+	fmt.printfln("12-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_12, latency_ms_12)
+	fmt.printfln("20-slot scheduler avg tok/s: %.2f, avg latency: %.0fms", tok_s_20, latency_ms_20)
+	fmt.printfln(
+		"unbounded avg tok/s: %.2f, avg latency: %.0fms",
+		unbounded_tok_s,
+		unbounded_latency_ms,
 	)
 }

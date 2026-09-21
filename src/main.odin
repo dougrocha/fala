@@ -1,118 +1,77 @@
 package main
 
 import "core:fmt"
-import "core:sync"
-import "core:thread"
-import "core:time"
+import "core:strings"
+
+import "lib:llama"
 
 main :: proc() {
-	fmt.println("Starting client")
+	llama.backend_init()
+	defer llama.backend_free()
+	fmt.println("llama backend initialized")
 
-	prompts: []string = {
-		"Explain how virtual memory paging works on x86-64.",
-		"I have a Rust function that reads a 200 MB file into a Vec<u8>, parses it line by line, and builds a HashMap. It's slower than I expected. What are the most likely bottlenecks, and what should I measure first?",
-		"I'm designing the descriptor management layer for a Vulkan renderer. Right now every material allocates its own descriptor set from a per-frame pool, and I rebind between draws, which means a lot of small binds per frame. I'm considering moving to a bindless setup: one large descriptor array of sampled images, indexed by a push-constant handle stored in the material data. What are the practical trade-offs on desktop GPUs, what driver or extension support do I need to check for, and how should I handle resource lifetime when a texture is freed while draws referencing its index are still in flight?",
-		"I'm working on a real-time renderer written in Rust with a Vulkan backend, targeting Linux and Windows desktop GPUs from roughly the last five years. The frame graph is hand-rolled: an explicit list of passes, each declaring the images and buffers it reads and writes, and a small scheduler that walks that list once per frame to insert pipeline barriers and image layout transitions. Resource lifetimes are tracked with a generational arena, and transient render targets are suballocated from a handful of large device-local memory blocks reused across frames. The problem is synchronization correctness as the pass count grows. The scheduler currently emits a barrier whenever a later pass reads a resource any earlier pass wrote, which is conservative but correct. Profiling shows that on scenes with heavy shadow-cascade work I lose meaningful GPU time to barriers serializing work that could overlap, especially between the cascade passes themselves, which write to disjoint array layers of the same depth image. My layout tracking is per-image rather than per-subresource, so those passes look like they conflict when they don't. I'm considering three directions. First, extend the tracker to per-subresource granularity, keyed on mip level and array layer, merging ranges when contiguous. Second, keep whole-image tracking but split the cascade array into separate images, trading memory and descriptor slots for simpler synchronization. Third, move to a real dependency graph with topological sorting and automatic barrier batching — the biggest rewrite, but probably where I end up eventually. Constraints: no per-frame heap allocation in the scheduler, no large new dependencies, and the codebase is data-oriented, so struct-of-arrays layouts and index-based handles are the norm rather than trait objects and smart pointers. Walk me through the trade-offs of each approach, particularly implementation complexity versus the GPU time I'd actually recover. If the per-subresource tracker is the right first step, sketch the data structures: how to represent a subresource range compactly, how to store current access and layout state, and how merge logic should behave when a new access partially overlaps an existing tracked range. Also flag anything about synchronization2 semantics that would change the design.",
-		"I'm building a real-time renderer in Rust with a Vulkan 1.3 backend targeting Linux and Windows desktop GPUs from roughly the last five years, and I've reached the point where the architecture decisions I made early are starting to fight each other, so I want a thorough review of the whole pipeline before I commit to a rewrite; the current design is a hand-rolled frame graph built from an explicit list of passes, each declaring the images and buffers it reads and writes along with the stage and access masks it needs, and a scheduler that walks that list once per frame to insert pipeline barriers and image layout transitions, with resource lifetimes tracked in a generational arena, transient render targets suballocated from a handful of large device-local memory blocks reused across frames, and per-frame ring buffers for uniform and staging data sized to three frames in flight; geometry is submitted through a single large vertex and index buffer with draws issued as indirect commands built on the GPU by a compute culling pass that does frustum and two-phase occlusion culling against a hierarchical depth pyramid, and materials are bindless, with one large descriptor array of sampled images indexed by a handle packed into the per-instance data alongside a transform index; the shadow path uses four cascades rendered into array layers of a single depth image, the lighting pass is clustered forward with a froxel grid built each frame by a compute pass, and post-processing is a small chain of compute passes for bloom, tonemapping, and a temporal resolve that reprojects using per-pixel motion vectors; the specific problems I'm hitting are, first, synchronization granularity, because layout and access tracking is per-image rather than per-subresource, so the cascade passes appear to conflict even though they write disjoint array layers, and profiling shows meaningful GPU time lost to barriers serializing work that could overlap; second, descriptor lifetime, because a texture freed while draws referencing its bindless index are still in flight produces intermittent device-lost errors on one vendor and silent garbage sampling on another, and my current fix is a deferred-free queue keyed on frame index which works but leaks memory under streaming-heavy scenes; third, the indirect draw path has a readback dependency I don't like, where the CPU reads back a draw count to decide whether to skip a pass, costing me a stall roughly every fourth frame; and fourth, the temporal resolve has visible ghosting on fast camera motion that I suspect is a velocity buffer precision issue rather than a clamping issue, but I haven't isolated it; my constraints are that the scheduler must not heap-allocate per frame, I don't want large new dependencies beyond ash and a thin allocator, the codebase is strictly data-oriented so struct-of-arrays layouts and index-based handles are the norm rather than trait objects and reference counting, and I want the design to stay portable enough that a Metal backend is not ruled out later; what I want from you is, first, an assessment of whether the per-image tracking should become per-subresource tracking or whether I should restructure the graph into a real dependency DAG with topological sorting and automatic barrier batching, including where each approach pays off and where it just moves complexity around; second, a concrete sketch of the data structures for whichever tracker you recommend, covering how to represent a subresource range compactly, how to store current access and layout state, how merge logic should behave when a new access partially overlaps an existing tracked range, and how to keep all of it allocation-free across frames; third, a correct pattern for bindless resource lifetime that doesn't rely on unbounded deferred-free queues, including how to handle the case where a streaming system wants to reuse a descriptor slot immediately; fourth, a way to eliminate the readback stall in the indirect path, with the trade-offs of conditional rendering versus always-dispatch-with-zero-count versus GPU-side command compaction; and fifth, a short diagnostic plan for the ghosting, listing what to check and in what order, and what formats and encodings are appropriate for motion vectors at 1440p and 4K; wherever synchronization2 semantics, timeline semaphores, or VK_EXT_descriptor_buffer would change your recommendation, say so explicitly and explain what portability cost that carries.",
-		"I'm building a real-time renderer in Rust on top of ash against Vulkan 1.3, targeting Linux and Windows desktop GPUs from roughly the last five years across all three vendors, and after about eighteen months of incremental work I've reached the point where several early architecture decisions are actively fighting each other, so before I commit to what looks like a multi-month rewrite of the middle layers I want a thorough first-principles review of the whole system, the failure modes I'm seeing, and the specific data structures I should be reaching for instead; here is the current shape of it, in enough detail that you can argue with the design rather than guess at it: the core is a hand-rolled frame graph built each frame from an explicit list of passes, where each pass declares the images and buffers it reads and writes along with the pipeline stage and access masks it needs, and a scheduler walks that list once per frame in declaration order to insert pipeline barriers and image layout transitions, emitting a barrier whenever a later pass touches a resource an earlier pass wrote, which is conservative but correct; resources live in a generational arena with index-plus-generation handles, transient render targets are suballocated from a handful of large device-local memory blocks that persist across frames and are reused by a simple bump-and-reset scheme keyed on a per-frame lifetime interval, persistent resources go through a separate free-list allocator with power-of-two size classes, and per-frame uniform and staging data comes out of ring buffers sized for three frames in flight with a fence per frame slot; geometry is consolidated into one large vertex buffer and one large index buffer with meshes referenced by base-vertex and first-index offsets, draws are issued as indirect commands built entirely on the GPU by a compute culling pass that does frustum culling followed by two-phase occlusion culling against a hierarchical depth pyramid built from the previous frame's depth with a reprojection step, and instance data lives in a large structured buffer indexed by the draw's instance offset; materials are fully bindless, with one descriptor array of sampled images sized to sixteen thousand slots, a parallel array of samplers, and a material index packed into the per-instance record alongside a transform index that points into a separate transform buffer updated by a compute pass that flattens a scene hierarchy into world matrices; the shadow path renders four cascades into array layers of a single depth image with a per-cascade indirect draw list produced by the same culling compute shader run with different frusta, the main lighting pass is clustered forward with a froxel grid rebuilt each frame by a compute pass that bins lights into a per-cluster index list, and post-processing is a chain of compute passes doing a downsample-upsample bloom, exposure from a luminance histogram, tonemapping, and a temporal resolve that reprojects history using per-pixel motion vectors with neighborhood clamping; there is an async compute queue used for the culling and cluster building work, synchronized against the graphics queue with binary semaphores, and a transfer queue used for streaming uploads; shaders are written in GLSL, compiled to SPIR-V offline with a small build step, reflected at load time to build pipeline layouts, and hot-reloaded by watching the output directory and rebuilding pipelines lazily on next use; the job system is a simple work-stealing pool with per-thread deques used mostly for scene traversal, animation, and command buffer recording, with one secondary command buffer per thread per pass merged into a primary at submit; the problems I'm hitting, roughly in order of how much they cost me, are as follows: first, synchronization granularity, because layout and access tracking is per-image rather than per-subresource, so the four cascade passes appear to conflict with each other even though they write disjoint array layers of the same depth image, and the same issue makes my bloom chain fully serial when the downsample steps write distinct mip levels, with profiling showing somewhere between one and two milliseconds per frame lost to barriers that serialize work which could overlap, depending on scene complexity; second, bindless descriptor lifetime, because a texture freed while draws referencing its index are still in flight produces intermittent device-lost errors on one vendor and silent garbage sampling on another, and my current mitigation is a deferred-free queue keyed on frame index which is correct but effectively leaks under streaming-heavy scenes where slot pressure is high, and I have no good answer for the case where the streaming system genuinely wants to reuse a slot immediately with a different resource; third, the indirect draw path still has a CPU readback dependency, where I map and read a draw count to decide whether to skip a pass entirely, costing me a full pipeline stall roughly every fourth frame and making frame time noticeably spiky in a way that shows up as visible judder despite an otherwise comfortable average; fourth, the temporal resolve shows visible ghosting on fast camera motion and on disocclusion edges around thin geometry, which I suspect is motion vector precision rather than clamping since widening the neighborhood clamp does not help, but I have not isolated it and do not have a good methodology for doing so; fifth, the async compute setup is not actually buying me much overlap, and when I capture frames the compute work appears to run almost entirely serialized against graphics, which I assume is a semaphore granularity or queue family ownership transfer problem but have not diagnosed; sixth, memory fragmentation in the persistent allocator gets bad after ten or fifteen minutes of streaming, with allocation failures despite plenty of nominally free memory, and my current workaround of rounding everything up to size classes wastes an unacceptable fraction of budget on a card with eight gigabytes; and seventh, pipeline creation stalls on first use of a new material variant, badly enough to cause a hitch of several frames, and the pipeline cache I serialize to disk helps only on second run; my constraints are that the scheduler and the per-frame path must not heap-allocate at all, arena and scratch allocation is fine but must be bounded and reset per frame, I do not want large new dependencies beyond ash and a thin memory allocator, the codebase is strictly data-oriented in the Handmade Hero sense with struct-of-arrays layouts, index-based handles, explicit lifetimes, and no trait objects or reference counting in the hot paths, I want the design to remain portable enough that a Metal backend is not ruled out later, which means being careful about how much of the abstraction assumes explicit barriers and descriptor sets, and I care more about ninety-ninth-percentile frame time and lack of hitching than about raw average throughput, since the target is a smooth locked sixty with headroom rather than an uncapped benchmark number; what I want from you, and please take these in order and be concrete rather than surveying the space: first, an assessment of whether I should extend the existing tracker to per-subresource granularity or restructure the graph into a real dependency DAG with topological sorting, automatic barrier batching, and resource aliasing derived from computed lifetimes, including an honest read on where each approach actually pays off, where it merely relocates complexity, and what the intermediate step looks like if I want to ship something in a week rather than a month; second, a concrete sketch of the data structures for whichever tracker you recommend, covering how to represent a subresource range compactly enough to compare and merge cheaply, how to store current access and layout state alongside the queue family that currently owns it, how merge logic should behave when a new access partially overlaps an existing tracked range including the awkward cases of partial mip overlap and mixed read-write access, and how to keep the whole thing allocation-free and cache-friendly across frames; third, a correct and bounded pattern for bindless resource lifetime that does not rely on an unbounded deferred-free queue, including how to handle immediate slot reuse safely, whether a sentinel or default texture bound into freed slots is the right mitigation for the race, and what the actual specification guarantees are around descriptor update-after-bind and partially-bound arrays with respect to in-flight work; fourth, a way to eliminate the readback stall in the indirect path, comparing conditional rendering, unconditional dispatch with a zero count, GPU-side command compaction, and multi-draw-indirect-count, with a recommendation for my case and a note on which of these have portability problems; fifth, a diagnostic plan for the ghosting, listing what to check and in what order, what precision and encoding motion vectors need at 1440p and 4K, how to rule out reprojection jitter and sample offset mismatch, and what a correct disocclusion test should look like given I already have depth and velocity; sixth, an explanation of why my async compute is likely serializing, what queue family ownership transfers actually cost, whether timeline semaphores would change the structure meaningfully, and how to verify overlap is happening rather than trusting a profiler's timeline view; seventh, a memory allocation strategy that handles streaming churn without fragmenting, covering whether to move to a proper buddy or TLSF allocator, how to think about separate pools per usage class, and whether defragmentation by reallocate-and-copy is worth the complexity given I have handles and could patch indices centrally; and eighth, an approach to pipeline creation hitching, covering background compilation on worker threads, whether pipeline libraries or shader object extensions solve this properly, what a warm-up pass should actually enumerate, and how to fail gracefully to a placeholder when a pipeline is not ready; throughout, wherever synchronization2 semantics, timeline semaphores, descriptor buffers, dynamic rendering, or shader objects would change your recommendation, say so explicitly and state what portability cost that carries for both older drivers and a future Metal backend; where you think one of my premises is wrong, say that first rather than answering the question as asked; and where a decision genuinely depends on measurement I have not taken, tell me precisely what to measure and what result would push the decision each way rather than hedging.",
-	}
-	
-	//odinfmt: disable
-	work_queue: []Work_Item = {
-		{prompt = prompts[0], max_tokens = 64},
-		{prompt = prompts[2], max_tokens = 128},
-		{prompt = prompts[1], max_tokens = 64},
-		{prompt = prompts[0], max_tokens = 128},
-		{prompt = prompts[4], max_tokens = 128},
-		{prompt = prompts[3], max_tokens = 128},
-		{prompt = prompts[0], max_tokens = 64},
-		{prompt = prompts[1], max_tokens = 64},
-		{prompt = prompts[1], max_tokens = 64},
-	}
-	//odinfmt: enable
+	params := llama.model_default_params()
 
-	ROUNDS :: 5
+	fmt.println("gpu layers:", params.n_gpu_layers)
+	fmt.println("main gpu:", params.main_gpu)
+	fmt.println("vocab only:", params.vocab_only)
 
-	//odinfmt: disable
-	slot_counts := []int{2, 4, 6, 8, 12, 20}
-	//odinfmt: enable
+	model := llama.model_load_from_file("models/Qwen3-1.7B-Q8_0.gguf", params)
+	defer llama.model_free(model)
 
-	slot_count_avg_tok_s := make([]f64, len(slot_counts))
-	defer delete(slot_count_avg_tok_s)
-	slot_count_avg_latency_ms := make([]f64, len(slot_counts))
-	defer delete(slot_count_avg_latency_ms)
-
-	for slot_count, i in slot_counts {
-		tok_s_sum: f64
-		latency_ms_sum: f64
-
-		for round in 0 ..< ROUNDS {
-			fmt.printfln("\n=== %d-slot scheduler, round %d/%d ===", slot_count, round + 1, ROUNDS)
-
-			stopwatch: time.Stopwatch
-			time.stopwatch_start(&stopwatch)
-			tokens, completed, total_latency_ms := run_scheduler(work_queue, slot_count)
-			time.stopwatch_stop(&stopwatch)
-
-			wall_clock := time.duration_seconds(time.stopwatch_duration(stopwatch))
-			tok_s := f64(tokens) / wall_clock
-			avg_latency_ms := total_latency_ms / f64(completed)
-			tok_s_sum += tok_s
-			latency_ms_sum += avg_latency_ms
-
-			fmt.printfln("Wall clock: %.2f seconds", wall_clock)
-			fmt.printfln(
-				"%d/%d requests, %.2f tok/s, avg latency %.0fms",
-				completed,
-				len(work_queue),
-				tok_s,
-				avg_latency_ms,
-			)
-		}
-
-		slot_count_avg_tok_s[i] = tok_s_sum / f64(ROUNDS)
-		slot_count_avg_latency_ms[i] = latency_ms_sum / f64(ROUNDS)
+	if model == nil {
+		fmt.println("failed to load model")
+		return
 	}
 
-	unbounded_tok_s_sum: f64
-	unbounded_latency_ms_sum: f64
+	fmt.println("model loaded")
 
-	for round in 0 ..< ROUNDS {
-		fmt.printfln("\n=== Unbounded, round %d/%d ===", round + 1, ROUNDS)
+	ctx_params := llama.context_default_params()
 
-		stopwatch: time.Stopwatch
-		time.stopwatch_start(&stopwatch)
-		tokens, completed, total_latency_ms := run_unbounded(work_queue)
-		time.stopwatch_stop(&stopwatch)
+	ctx := llama.init_from_model(model, ctx_params)
+	if ctx == nil {
+		fmt.println("failed to create context")
+		return
+	}
+	defer llama.free(ctx)
 
-		wall_clock := time.duration_seconds(time.stopwatch_duration(stopwatch))
-		tok_s := f64(tokens) / wall_clock
-		avg_latency_ms := total_latency_ms / f64(completed)
-		unbounded_tok_s_sum += tok_s
-		unbounded_latency_ms_sum += avg_latency_ms
+	fmt.println("context created")
 
-		fmt.printfln("Wall clock: %.2f seconds", wall_clock)
-		fmt.printfln(
-			"%d/%d requests, %.2f tok/s, avg latency %.0fms",
-			completed,
-			len(work_queue),
-			tok_s,
-			avg_latency_ms,
-		)
+	vocab := llama.model_get_vocab(model)
+	if vocab == nil {
+		fmt.println("failed to get vocab")
+		return
 	}
 
-	fmt.printfln("\n=== Averages over %d rounds ===", ROUNDS)
-	for slot_count, i in slot_counts {
-		fmt.printfln(
-			"%d-slot scheduler avg tok/s: %.2f, avg latency: %.0fms",
-			slot_count,
-			slot_count_avg_tok_s[i],
-			slot_count_avg_latency_ms[i],
-		)
-	}
-	fmt.printfln(
-		"unbounded avg tok/s: %.2f, avg latency: %.0fms",
-		unbounded_tok_s_sum / f64(ROUNDS),
-		unbounded_latency_ms_sum / f64(ROUNDS),
+	prompt := "Hello World! This is inferencing, stuff."
+	c_prompt := strings.clone_to_cstring(prompt)
+
+	count := -llama.tokenize(vocab, c_prompt, i32(len(prompt)), nil, 0, true, true)
+
+	tokens := make([]llama.Token, count)
+	defer delete(tokens)
+
+	n := llama.tokenize(
+		vocab,
+		c_prompt,
+		i32(len(prompt)),
+		raw_data(tokens),
+		i32(len(tokens)),
+		true,
+		true,
 	)
+
+	fmt.println("token count:", n)
+	fmt.println("tokens:", tokens)
+
+
+	buf: [128]u8
+	for token in tokens {
+		n := llama.token_to_piece(vocab, token, &buf[0], i32(len(buf)), 0, false)
+
+		if n > 0 {
+			piece := string(buf[:n])
+			fmt.printfln("%v -> %q", token, piece)
+		}
+	}
 }
