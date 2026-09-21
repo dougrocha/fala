@@ -2,7 +2,7 @@
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-MODEL="${1:-"$SCRIPT_DIR/models/model.gguf"}"
+MODEL="${1:-"$SCRIPT_DIR/models/Qwen3-1.7B-Q8_0.gguf"}"
 
 if ! command -v llama-server >/dev/null 2>&1; then
     echo "llama-server is not installed or not on PATH"
@@ -11,4 +11,7 @@ fi
 
 llama-server \
     --model "$MODEL" \
-    --ctx-size 4096
+    --ctx-size 4096 \
+    --reasoning off \
+    --no-cache-prompt \
+    -lv 4
