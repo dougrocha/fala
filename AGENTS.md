@@ -72,3 +72,28 @@ Help me learn inference server engineering on my own Odin server that runs llama
 - On failure or overflow, skip the item. Do not add fallback paths.
 - Do not code for rare edge cases. Accept them.
 - Fewer lines and no extra allocations beat full coverage of edge cases.
+
+## Workflow: I Write, You Fill the Gaps
+
+I write the code by hand. You fill only the gaps that I mark.
+
+### Gap Markers
+- A `// TODO: ...` comment is a gap. Write the code at that spot.
+- A proc with only a signature (empty body or `unimplemented()`) is a gap. Write the body.
+- Older `// TODO:` comments can exist. List the TODOs you find, and ask which ones are gaps before you fill them.
+
+### Rules
+- Change only the gaps. Do not rewrite or refactor code around them.
+- Match my names, structure, and formatting.
+- Build and test after each fill. Show the result.
+- Explain what you filled in, in a few short sentences.
+- Ask first if a gap needs a larger change, such as a new struct field or a new file.
+
+### Bugs
+- Report bugs outside the gaps with the file, the line, and a failure case.
+- Do not fix them. I fix them.
+
+## Commit Style
+- Use a short, lowercase message. Examples: "chat loop", "http server", "split timings".
+- Do not add a body.
+- Do not add a co-author line.
