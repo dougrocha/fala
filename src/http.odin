@@ -66,3 +66,17 @@ send_http :: proc(client: net.TCP_Socket, status: string, body: string) {
 
 	net.send_tcp(client, transmute([]u8)response)
 }
+
+send_sse_headers :: proc(client: net.TCP_Socket) {
+	headers := "HTTP/1.1 200 OK\r\n" +
+		"Content-Type: text/event-stream\r\n" +
+		"Cache-Control: no-cache\r\n" +
+		"Connection: close\r\n\r\n"
+
+	net.send_tcp(client, transmute([]u8)headers)
+}
+
+send_sse_event :: proc(client: net.TCP_Socket, data: string) {
+	event := fmt.tprintf("data: %s\n\n", data)
+	net.send_tcp(client, transmute([]u8)event)
+}

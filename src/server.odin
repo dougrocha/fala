@@ -15,7 +15,11 @@ Pending :: struct {
 	prompt:            string,
 	max_tokens:        int,
 	arrive:            time.Tick,
-	done:              sync.Sema,
+	stream:            bool,
+	signal:            sync.Sema,
+	mutex:             sync.Mutex,
+	stream_buf:        strings.Builder,
+	finished:          bool,
 	answer:            string,
 	prompt_tokens:     int,
 	completion_tokens: int,
@@ -93,11 +97,23 @@ run_server :: proc(engine: ^Engine) {
 				strings.builder_reset(&slot.answer)
 				slot.pending = nil
 
-				sync.sema_post(&p.done)
+				sync.mutex_lock(&p.mutex)
+				p.finished = true
+				sync.mutex_unlock(&p.mutex)
+
+				sync.sema_post(&p.signal)
 				continue
 			}
 
-			append_token_piece(engine.vocab, token, &slot.answer)
+			piece := append_token_piece(engine.vocab, token, &slot.answer)
+
+			if slot.pending.stream {
+				sync.mutex_lock(&slot.pending.mutex)
+				strings.write_string(&slot.pending.stream_buf, piece)
+				sync.mutex_unlock(&slot.pending.mutex)
+
+				sync.sema_post(&slot.pending.signal)
+			}
 
 			slot.i_batch = batch.n_tokens
 			batch_add(batch, token, slot.n_pos, i32(s), true)
@@ -122,7 +138,8 @@ run_server :: proc(engine: ^Engine) {
 			if i32(len(tokens)) >= n_ctx_seq {
 				delete(tokens)
 				p.failed = true
-				sync.sema_post(&p.done)
+				p.finished = true
+				sync.sema_post(&p.signal)
 				continue
 			}
 
@@ -236,11 +253,18 @@ handle_connection :: proc(server: ^Server, client: net.TCP_Socket) {
 		prompt     = prompt,
 		max_tokens = req.max_tokens if req.max_tokens > 0 else 256,
 		arrive     = time.tick_now(),
+		stream     = req.stream,
 	}
+	defer strings.builder_destroy(&pending.stream_buf)
 
 	queue_push(server, &pending)
-	sync.sema_wait(&pending.done)
+	sync.sema_wait(&pending.signal)
 	defer delete(pending.answer)
+
+	if pending.stream && !pending.failed {
+		stream_response(client, &pending)
+		return
+	}
 
 	if pending.failed {
 		send_http(client, "400 Bad Request", `{"error":"prompt too long"}`)
@@ -249,6 +273,52 @@ handle_connection :: proc(server: ^Server, client: net.TCP_Socket) {
 
 	json_body, _ := json.marshal(make_response(&pending), allocator = context.temp_allocator)
 	send_http(client, "200 OK", string(json_body))
+}
+
+// stream_response sends new text as SSE events until the request is finished.
+// The first signal was already received by the caller.
+stream_response :: proc(client: net.TCP_Socket, p: ^Pending) {
+	send_sse_headers(client)
+
+	for {
+		sync.mutex_lock(&p.mutex)
+		text := strings.to_string(p.stream_buf)
+		finished := p.finished
+
+		// hold back an incomplete UTF-8 character until its next bytes arrive
+		cut := len(text)
+		for cut > 0 && !utf8.valid_string(text[:cut]) {
+			cut -= 1
+		}
+
+		text = strings.clone(text[:cut], context.temp_allocator)
+		remove_range(&p.stream_buf.buf, 0, cut)
+		sync.mutex_unlock(&p.mutex)
+
+		if len(text) > 0 {
+			chunk: Stream_Chunk
+			chunk.choices = make(type_of(chunk.choices), 1, context.temp_allocator)
+			chunk.choices[0].delta.content = text
+
+			json_body, _ := json.marshal(chunk, allocator = context.temp_allocator)
+			send_sse_event(client, string(json_body))
+		}
+
+		if finished {
+			send_sse_event(client, "[DONE]")
+			return
+		}
+
+		sync.sema_wait(&p.signal)
+	}
+}
+
+Stream_Chunk :: struct {
+	choices: []struct {
+		delta: struct {
+			content: string,
+		},
+	},
 }
 
 make_response :: proc(p: ^Pending) -> Response {

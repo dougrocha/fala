@@ -3,6 +3,7 @@ package main
 Request :: struct {
 	messages:   []Message,
 	max_tokens: int,
+	stream:     bool,
 }
 
 Message :: struct {
