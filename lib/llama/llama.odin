@@ -72,6 +72,29 @@ Vocab :: struct {}
 
 Token :: i32
 
+Batch :: struct {
+	n_tokens: i32,
+	token:    [^]Token,
+	embd:     [^]f32,
+	pos:      [^]i32,
+	n_seq_id: [^]i32,
+	seq_id:   [^][^]i32,
+	logits:   [^]i8,
+}
+
+Sampler :: struct {}
+
+Chat_Message :: struct {
+	role:    cstring,
+	content: cstring,
+}
+
+Log_Callback :: proc "c" (level: c.int, text: cstring, user_data: rawptr)
+
+Sampler_Chain_Params :: struct {
+	no_perf: c.bool,
+}
+
 @(default_calling_convention = "c")
 foreign lib {
 	@(link_name = "llama_backend_init")
@@ -106,4 +129,43 @@ foreign lib {
 
 	@(link_name = "llama_token_to_piece")
 	token_to_piece :: proc(vocab: ^Vocab, token: Token, buf: [^]u8, length: i32, lstrip: i32, special: c.bool) -> i32 ---
+
+	@(link_name = "llama_batch_get_one")
+	batch_get_one :: proc(tokens: [^]Token, n_tokens: i32) -> Batch ---
+
+	@(link_name = "llama_decode")
+	decode :: proc(ctx: ^Context, batch: Batch) -> i32 ---
+
+	@(link_name = "llama_get_logits_ith")
+	get_logits_ith :: proc(ctx: ^Context, i: i32) -> [^]f32 ---
+
+	@(link_name = "llama_vocab_n_tokens")
+	vocab_n_tokens :: proc(vocab: ^Vocab) -> i32 ---
+
+	@(link_name = "llama_vocab_is_eog")
+	vocab_is_eog :: proc(vocab: ^Vocab, token: Token) -> c.bool ---
+
+	@(link_name = "llama_log_set")
+	log_set :: proc(callback: Log_Callback, user_data: rawptr) ---
+
+	@(link_name = "llama_sampler_chain_init")
+	sampler_chain_init :: proc(params: Sampler_Chain_Params) -> ^Sampler ---
+
+	@(link_name = "llama_sampler_init_greedy")
+	sampler_init_greedy :: proc() -> ^Sampler ---
+
+	@(link_name = "llama_sampler_chain_add")
+	sampler_chain_add :: proc(chain: ^Sampler, smpl: ^Sampler) ---
+
+	@(link_name = "llama_sampler_sample")
+	sampler_sample :: proc(smpl: ^Sampler, ctx: ^Context, idx: i32) -> Token ---
+
+	@(link_name = "llama_sampler_free")
+	sampler_free :: proc(smpl: ^Sampler) ---
+
+	@(link_name = "llama_model_chat_template")
+	model_chat_template :: proc(model: ^Model, name: cstring) -> cstring ---
+
+	@(link_name = "llama_chat_apply_template")
+	chat_apply_template :: proc(tmpl: cstring, chat: [^]Chat_Message, n_msg: c.size_t, add_ass: c.bool, buf: [^]u8, length: i32) -> i32 ---
 }
