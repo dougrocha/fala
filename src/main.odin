@@ -14,5 +14,5 @@ main :: proc() {
 	}
 	defer engine_free(&engine)
 
-	run_batch(&engine)
+	run_continuous(&engine)
 }

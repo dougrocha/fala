@@ -7,7 +7,7 @@ import "core:thread"
 Job :: struct($In, $Out: typeid) {
 	index:  int,
 	input:  In,
-	work:   proc(In) -> (Out, bool),
+	work:   proc(_: In) -> (Out, bool),
 	output: Out,
 	ok:     bool,
 }
@@ -15,7 +15,7 @@ Job :: struct($In, $Out: typeid) {
 // run_concurrent runs work(inputs[i]) on its own thread for every input,
 // waits for all of them to finish, and returns one Job per input in order.
 // Caller owns the returned slice (delete it when done).
-run_concurrent :: proc(inputs: []$In, work: proc(In) -> ($Out, bool)) -> []Job(In, Out) {
+run_concurrent :: proc(inputs: []$In, work: proc(_: In) -> ($Out, bool)) -> []Job(In, Out) {
 	jobs := make([]Job(In, Out), len(inputs))
 
 	threads := make([dynamic]^thread.Thread, 0, len(inputs))
@@ -42,9 +42,9 @@ run_concurrent :: proc(inputs: []$In, work: proc(In) -> ($Out, bool)) -> []Job(I
 	return jobs
 }
 
-job_runner :: proc($In, $Out: typeid) -> proc(^thread.Thread) {
+job_runner :: proc($In, $Out: typeid) -> proc(_: ^thread.Thread) {
 	return proc(t: ^thread.Thread) {
-		job := (^Job(In, Out))(t.data)
-		job.output, job.ok = job.work(job.input)
-	}
+			job := (^Job(In, Out))(t.data)
+			job.output, job.ok = job.work(job.input)
+		}
 }

@@ -20,27 +20,20 @@ PROMPTS := [8]cstring {
 }
 
 run_batch :: proc(engine: ^Engine) {
-
 	sampler := make_sampler()
 	defer llama.sampler_free(sampler)
 
-	tmpl := llama.model_chat_template(engine.model, nil)
-
-	batch := llama.batch_init(2048, 0, 1)
-	defer llama.batch_free(batch)
+	batch := &engine.batch
+	batch.n_tokens = 0
 
 	last_index: [N_SEQ]i32
 	n_pos: [N_SEQ]i32
 
 	for seq in 0 ..< N_SEQ {
-		prompt := format_chat(tmpl, PROMPTS[seq % len(PROMPTS)])
+		prompt := format_chat(engine, PROMPTS[seq % len(PROMPTS)])
 		tokens := tokenize_text(engine.vocab, prompt, true)
 
-		for token, i in tokens {
-			batch_add(&batch, token, i32(i), i32(seq), i == len(tokens) - 1)
-		}
-
-		last_index[seq] = batch.n_tokens - 1
+		last_index[seq] = batch_add_tokens(batch, tokens, 0, i32(seq))
 		n_pos[seq] = i32(len(tokens))
 		fmt.printfln("seq %d: %d prompt tokens", seq, len(tokens))
 
@@ -48,7 +41,7 @@ run_batch :: proc(engine: ^Engine) {
 		delete(prompt)
 	}
 
-	result := llama.decode(engine.ctx, batch)
+	result := llama.decode(engine.ctx, batch^)
 	if result != 0 {
 		fmt.println("decode failed:", result)
 		return
@@ -85,7 +78,7 @@ run_batch :: proc(engine: ^Engine) {
 			append_token_piece(engine.vocab, token, &answers[seq])
 
 			last_index[seq] = batch.n_tokens
-			batch_add(&batch, token, n_pos[seq], i32(seq), true)
+			batch_add(batch, token, n_pos[seq], i32(seq), true)
 
 			n_pos[seq] += 1
 			n_gen[seq] += 1
@@ -95,7 +88,7 @@ run_batch :: proc(engine: ^Engine) {
 			break
 		}
 
-		result = llama.decode(engine.ctx, batch)
+		result = llama.decode(engine.ctx, batch^)
 		if result != 0 {
 			fmt.println("decode failed:", result)
 			return
@@ -114,21 +107,11 @@ run_batch :: proc(engine: ^Engine) {
 		fmt.printfln("\nseq %d (%d tokens): %s", seq, n_gen[seq], strings.to_string(answers[seq]))
 	}
 
-	fmt.printfln("\n%d tokens in %d decode steps, %.1f ms (%.0f tok/s total)", total, steps, gen_ms, f64(total) / gen_ms * 1000)
-}
-
-format_chat :: proc(tmpl: cstring, user: cstring) -> string {
-	messages := [2]llama.Chat_Message {
-		{role = "system", content = "Answer in under 60 words."},
-		{role = "user", content = user},
-	}
-
-	buf: [4096]u8
-	n := llama.chat_apply_template(tmpl, &messages[0], len(messages), true, &buf[0], i32(len(buf)))
-
-	if n < 0 || n > i32(len(buf)) {
-		return ""
-	}
-
-	return fmt.aprintf("%s%s", string(buf[:n]), THINK_OFF)
+	fmt.printfln(
+		"\n%d tokens in %d decode steps, %.1f ms (%.0f tok/s total)",
+		total,
+		steps,
+		gen_ms,
+		f64(total) / gen_ms * 1000,
+	)
 }

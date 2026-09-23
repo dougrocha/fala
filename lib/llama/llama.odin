@@ -202,4 +202,7 @@ foreign lib {
 
 	@(link_name = "llama_batch_free")
 	batch_free :: proc(batch: Batch) ---
+
+	@(link_name = "llama_memory_seq_rm")
+	memory_seq_rm :: proc(mem: ^Memory, seq_id: i32, p0: i32, p1: i32) -> c.bool ---
 }

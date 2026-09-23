@@ -30,15 +30,7 @@ send_completion :: proc(message: string, max_tokens: int) -> (response: Response
 
 // post_json connects to ip:port, sends payload as a JSON POST to path, and
 // returns the raw response body. Caller owns the returned bytes.
-post_json :: proc(
-	ip: string,
-	port: int,
-	path: string,
-	payload: $T,
-) -> (
-	body: []u8,
-	ok: bool,
-) {
+post_json :: proc(ip: string, port: int, path: string, payload: $T) -> (body: []u8, ok: bool) {
 	addr, addr_ok := net.parse_ip4_address(ip)
 	if !addr_ok {
 		fmt.printfln("Failed to parse IP address %q", ip)
