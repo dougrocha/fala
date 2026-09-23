@@ -8,7 +8,7 @@ main :: proc() {
 	llama.backend_init()
 	defer llama.backend_free()
 
-	engine, ok := engine_init("models/Qwen3-1.7B-Q8_0.gguf", 4096, 2)
+	engine, ok := engine_init("models/Qwen3-1.7B-Q8_0.gguf", 4096, N_SEQ)
 	if !ok {
 		return
 	}

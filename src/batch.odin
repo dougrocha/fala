@@ -6,21 +6,34 @@ import "core:time"
 
 import "lib:llama"
 
+N_SEQ :: 4
+
+PROMPTS := [8]cstring {
+	"What is the capital of France?",
+	"Write one short sentence about the ocean.",
+	"Explain how a bicycle chain works.",
+	"Describe a rainy day in a city.",
+	"What does a CPU do?",
+	"Give three tips for learning to cook.",
+	"Why is the sky blue?",
+	"Describe the taste of fresh bread.",
+}
+
 run_batch :: proc(engine: ^Engine) {
-	prompts := [2]cstring{"What is the capital of France?", "Write one short sentence about the ocean."}
 
 	sampler := make_sampler()
 	defer llama.sampler_free(sampler)
 
 	tmpl := llama.model_chat_template(engine.model, nil)
 
-	batch := llama.batch_init(512, 0, 1)
+	batch := llama.batch_init(2048, 0, 1)
 	defer llama.batch_free(batch)
 
-	last_index: [2]i32
+	last_index: [N_SEQ]i32
+	n_pos: [N_SEQ]i32
 
-	for user, seq in prompts {
-		prompt := format_chat(tmpl, user)
+	for seq in 0 ..< N_SEQ {
+		prompt := format_chat(tmpl, PROMPTS[seq % len(PROMPTS)])
 		tokens := tokenize_text(engine.vocab, prompt, true)
 
 		for token, i in tokens {
@@ -28,6 +41,7 @@ run_batch :: proc(engine: ^Engine) {
 		}
 
 		last_index[seq] = batch.n_tokens - 1
+		n_pos[seq] = i32(len(tokens))
 		fmt.printfln("seq %d: %d prompt tokens", seq, len(tokens))
 
 		delete(tokens)
@@ -42,17 +56,13 @@ run_batch :: proc(engine: ^Engine) {
 
 	fmt.println("prefill complete:", batch.n_tokens, "tokens in 1 decode")
 
-	answers: [2]strings.Builder
+	answers: [N_SEQ]strings.Builder
 	defer for &answer in answers {
 		strings.builder_destroy(&answer)
 	}
 
-	n_pos: [2]i32
-	n_gen: [2]int
-	done: [2]bool
-
-	n_pos[0] = last_index[0] + 1
-	n_pos[1] = last_index[1] - last_index[0]
+	n_gen: [N_SEQ]int
+	done: [N_SEQ]bool
 
 	steps := 0
 	gen_start := time.tick_now()
@@ -60,7 +70,7 @@ run_batch :: proc(engine: ^Engine) {
 	for {
 		batch.n_tokens = 0
 
-		for seq in 0 ..< 2 {
+		for seq in 0 ..< N_SEQ {
 			if done[seq] {
 				continue
 			}
@@ -95,9 +105,12 @@ run_batch :: proc(engine: ^Engine) {
 	}
 
 	gen_ms := time.duration_milliseconds(time.tick_since(gen_start))
-	total := n_gen[0] + n_gen[1]
+	total := 0
+	for n in n_gen {
+		total += n
+	}
 
-	for seq in 0 ..< 2 {
+	for seq in 0 ..< N_SEQ {
 		fmt.printfln("\nseq %d (%d tokens): %s", seq, n_gen[seq], strings.to_string(answers[seq]))
 	}
 
