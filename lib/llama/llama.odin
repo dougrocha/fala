@@ -205,4 +205,7 @@ foreign lib {
 
 	@(link_name = "llama_memory_seq_rm")
 	memory_seq_rm :: proc(mem: ^Memory, seq_id: i32, p0: i32, p1: i32) -> c.bool ---
+
+	@(link_name = "llama_n_ctx_seq")
+	n_ctx_seq :: proc(ctx: ^Context) -> u32 ---
 }

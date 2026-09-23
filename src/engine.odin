@@ -9,6 +9,8 @@ import "lib:llama"
 
 THINK_OFF :: "<think>\n\n</think>\n\n"
 
+BATCH_SIZE :: 2048
+
 Engine :: struct {
 	model: ^llama.Model,
 	ctx:   ^llama.Context,
@@ -48,7 +50,7 @@ engine_init :: proc(
 	engine.vocab = llama.model_get_vocab(engine.model)
 	engine.mem = llama.get_memory(engine.ctx)
 	engine.tmpl = llama.model_chat_template(engine.model, nil)
-	engine.batch = llama.batch_init(2048, 0, 1)
+	engine.batch = llama.batch_init(BATCH_SIZE, 0, 1)
 
 	return engine, true
 }
@@ -124,6 +126,25 @@ format_chat :: proc(engine: ^Engine, user: cstring) -> string {
 	}
 
 	return fmt.aprintf("%s%s", string(buf[:n]), THINK_OFF)
+}
+
+format_messages :: proc(tmpl: cstring, messages: []Message) -> (prompt: string, ok: bool) {
+	chat := make([]llama.Chat_Message, len(messages), context.temp_allocator)
+	for m, i in messages {
+		chat[i] = {
+			role    = strings.clone_to_cstring(m.role, context.temp_allocator),
+			content = strings.clone_to_cstring(m.content, context.temp_allocator),
+		}
+	}
+
+	buf: [32768]u8
+	n := llama.chat_apply_template(tmpl, raw_data(chat), len(chat), true, &buf[0], i32(len(buf)))
+
+	if n < 0 || n > i32(len(buf)) {
+		return
+	}
+
+	return fmt.tprintf("%s%s", string(buf[:n]), THINK_OFF), true
 }
 
 append_token_piece :: proc(vocab: ^llama.Vocab, token: llama.Token, answer: ^strings.Builder) -> string {
