@@ -5,26 +5,19 @@ import "core:c/libc"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 import "lib:llama"
 
-main :: proc() {
-	if len(os.args) < 2 {
-		fmt.println("usage: inference-odin \"your message\"")
-		return
-	}
+THINK_OFF :: "<think>\n\n</think>\n\n"
 
+main :: proc() {
 	llama.log_set(log_errors_only, nil)
 
 	llama.backend_init()
 	defer llama.backend_free()
-	fmt.println("llama backend initialized")
 
 	params := llama.model_default_params()
-
-	fmt.println("gpu layers:", params.n_gpu_layers)
-	fmt.println("main gpu:", params.main_gpu)
-	fmt.println("vocab only:", params.vocab_only)
 
 	model := llama.model_load_from_file("models/Qwen3-1.7B-Q8_0.gguf", params)
 	defer llama.model_free(model)
@@ -33,8 +26,6 @@ main :: proc() {
 		fmt.println("failed to load model")
 		return
 	}
-
-	fmt.println("model loaded")
 
 	ctx_params := llama.context_default_params()
 	ctx_params.n_ctx = 4096
@@ -46,109 +37,131 @@ main :: proc() {
 	}
 	defer llama.free(ctx)
 
-	fmt.println("context created")
-
 	vocab := llama.model_get_vocab(model)
 	if vocab == nil {
 		fmt.println("failed to get vocab")
 		return
 	}
 
-	c_user := strings.clone_to_cstring(os.args[1])
-	defer delete(c_user)
-
-	messages := [2]llama.Chat_Message {
-		{role = "system", content = "Answer in under 60 words."},
-		{role = "user", content = c_user},
-	}
-
-	tmpl := llama.model_chat_template(model, nil)
-
-	prompt_buf: [4096]u8
-	n_prompt := llama.chat_apply_template(tmpl, &messages[0], len(messages), true, &prompt_buf[0], i32(len(prompt_buf)))
-
-	if n_prompt < 0 || n_prompt > i32(len(prompt_buf)) {
-		fmt.println("chat template failed:", n_prompt)
-		return
-	}
-
-	prompt := fmt.aprintf("%s<think>\n\n</think>\n\n", string(prompt_buf[:n_prompt]))
-	defer delete(prompt)
-
-	c_prompt := strings.clone_to_cstring(prompt)
-
-	count := -llama.tokenize(vocab, c_prompt, i32(len(prompt)), nil, 0, true, true)
-
-	tokens := make([]llama.Token, count)
-	defer delete(tokens)
-
-	n := llama.tokenize(
-		vocab,
-		c_prompt,
-		i32(len(prompt)),
-		raw_data(tokens),
-		i32(len(tokens)),
-		true,
-		true,
-	)
-
-	fmt.println("token count:", n)
-	fmt.println("tokens:", tokens)
-
-
-	buf: [128]u8
-	for token in tokens {
-		n := llama.token_to_piece(vocab, token, &buf[0], i32(len(buf)), 0, false)
-
-		if n > 0 {
-			piece := string(buf[:n])
-			fmt.printfln("%v -> %q", token, piece)
-		}
-	}
-
-	batch := llama.batch_get_one(raw_data(tokens), i32(len(tokens)))
-
-	result := llama.decode(ctx, batch)
-	if result != 0 {
-		fmt.println("decode failed:", result)
-		return
-	}
-	fmt.println("prefill complete")
-
 	sampler := llama.sampler_chain_init(llama.Sampler_Chain_Params{})
 	defer llama.sampler_free(sampler)
 
-	llama.sampler_chain_add(sampler, llama.sampler_init_greedy())
+	llama.sampler_chain_add(sampler, llama.sampler_init_top_k(40))
+	llama.sampler_chain_add(sampler, llama.sampler_init_top_p(0.9, 1))
+	llama.sampler_chain_add(sampler, llama.sampler_init_temp(0.7))
+	llama.sampler_chain_add(sampler, llama.sampler_init_dist(llama.DEFAULT_SEED))
 
-	for _ in 0 ..< 100 {
-		next_token := llama.sampler_sample(sampler, ctx, -1)
+	tmpl := llama.model_chat_template(model, nil)
+	mem := llama.get_memory(ctx)
 
-		if llama.vocab_is_eog(vocab, next_token) {
+	messages: [dynamic]llama.Chat_Message
+	defer delete(messages)
+
+	append(&messages, llama.Chat_Message{role = "system", content = "Answer in under 60 words."})
+
+	formatted: [32768]u8
+	prev_len: i32 = 0
+
+	input_buf: [4096]u8
+
+	answer: strings.Builder
+	defer strings.builder_destroy(&answer)
+
+	for {
+		fmt.print("> ")
+
+		n_input, err := os.read(os.stdin, input_buf[:])
+		if err != nil || n_input <= 0 {
 			break
 		}
 
-		print_token_piece(vocab, next_token)
+		line := strings.trim_space(string(input_buf[:n_input]))
+		if line == "" {
+			continue
+		}
 
-		batch = llama.batch_get_one(&next_token, 1)
+		append(&messages, llama.Chat_Message{role = "user", content = strings.clone_to_cstring(line)})
 
-		result = llama.decode(ctx, batch)
+		new_len := llama.chat_apply_template(tmpl, raw_data(messages), c.size_t(len(messages)), true, &formatted[0], i32(len(formatted)))
+		if new_len < 0 || new_len > i32(len(formatted)) {
+			fmt.println("chat too long")
+			break
+		}
 
+		prompt := fmt.aprintf("%s%s", string(formatted[prev_len:new_len]), THINK_OFF)
+		c_prompt := strings.clone_to_cstring(prompt)
+
+		count := -llama.tokenize(vocab, c_prompt, i32(len(prompt)), nil, 0, prev_len == 0, true)
+		tokens := make([]llama.Token, count)
+		llama.tokenize(vocab, c_prompt, i32(len(prompt)), raw_data(tokens), i32(len(tokens)), prev_len == 0, true)
+
+		pp_start := time.tick_now()
+
+		batch := llama.batch_get_one(raw_data(tokens), i32(len(tokens)))
+
+		result := llama.decode(ctx, batch)
 		if result != 0 {
 			fmt.println("decode failed:", result)
-			return
+			break
 		}
-	}
 
-	fmt.println()
+		pp_ms := time.duration_milliseconds(time.tick_since(pp_start))
+
+		strings.builder_reset(&answer)
+		tg_start := time.tick_now()
+		n_generated := 0
+
+		for _ in 0 ..< 256 {
+			next_token := llama.sampler_sample(sampler, ctx, -1)
+
+			if llama.vocab_is_eog(vocab, next_token) {
+				break
+			}
+
+			print_token_piece(vocab, next_token, &answer)
+			n_generated += 1
+
+			batch = llama.batch_get_one(&next_token, 1)
+
+			result = llama.decode(ctx, batch)
+			if result != 0 {
+				fmt.println("decode failed:", result)
+				break
+			}
+		}
+
+		tg_ms := time.duration_milliseconds(time.tick_since(tg_start))
+
+		fmt.println()
+		fmt.printfln(
+			"[prefill %d tok in %.1f ms | gen %d tok at %.0f tok/s | kv cells %d]",
+			len(tokens),
+			pp_ms,
+			n_generated,
+			f64(n_generated) / tg_ms * 1000,
+			llama.memory_seq_pos_max(mem, 0) + 1,
+		)
+
+		content := fmt.aprintf("%s%s", THINK_OFF, strings.to_string(answer))
+		append(&messages, llama.Chat_Message{role = "assistant", content = strings.clone_to_cstring(content)})
+
+		prev_len = new_len + i32(len(content))
+
+		delete(content)
+		delete(tokens)
+		delete(c_prompt)
+		delete(prompt)
+	}
 }
 
-print_token_piece :: proc(vocab: ^llama.Vocab, token: llama.Token) {
+print_token_piece :: proc(vocab: ^llama.Vocab, token: llama.Token, answer: ^strings.Builder) {
 	buf: [128]u8
 
 	n := llama.token_to_piece(vocab, token, &buf[0], i32(len(buf)), 0, false)
 
 	if n > 0 {
 		fmt.print(string(buf[:n]))
+		strings.write_string(answer, string(buf[:n]))
 	}
 }
 

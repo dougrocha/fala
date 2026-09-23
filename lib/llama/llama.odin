@@ -72,6 +72,8 @@ Vocab :: struct {}
 
 Token :: i32
 
+DEFAULT_SEED :: 0xFFFFFFFF
+
 Batch :: struct {
 	n_tokens: i32,
 	token:    [^]Token,
@@ -83,6 +85,8 @@ Batch :: struct {
 }
 
 Sampler :: struct {}
+
+Memory :: struct {}
 
 Chat_Message :: struct {
 	role:    cstring,
@@ -154,6 +158,21 @@ foreign lib {
 	@(link_name = "llama_sampler_init_greedy")
 	sampler_init_greedy :: proc() -> ^Sampler ---
 
+	@(link_name = "llama_sampler_init_top_k")
+	sampler_init_top_k :: proc(k: i32) -> ^Sampler ---
+
+	@(link_name = "llama_sampler_init_top_p")
+	sampler_init_top_p :: proc(p: f32, min_keep: c.size_t) -> ^Sampler ---
+
+	@(link_name = "llama_sampler_init_min_p")
+	sampler_init_min_p :: proc(p: f32, min_keep: c.size_t) -> ^Sampler ---
+
+	@(link_name = "llama_sampler_init_temp")
+	sampler_init_temp :: proc(t: f32) -> ^Sampler ---
+
+	@(link_name = "llama_sampler_init_dist")
+	sampler_init_dist :: proc(seed: u32) -> ^Sampler ---
+
 	@(link_name = "llama_sampler_chain_add")
 	sampler_chain_add :: proc(chain: ^Sampler, smpl: ^Sampler) ---
 
@@ -168,4 +187,13 @@ foreign lib {
 
 	@(link_name = "llama_chat_apply_template")
 	chat_apply_template :: proc(tmpl: cstring, chat: [^]Chat_Message, n_msg: c.size_t, add_ass: c.bool, buf: [^]u8, length: i32) -> i32 ---
+
+	@(link_name = "llama_get_memory")
+	get_memory :: proc(ctx: ^Context) -> ^Memory ---
+
+	@(link_name = "llama_memory_clear")
+	memory_clear :: proc(mem: ^Memory, data: c.bool) ---
+
+	@(link_name = "llama_memory_seq_pos_max")
+	memory_seq_pos_max :: proc(mem: ^Memory, seq_id: i32) -> i32 ---
 }
