@@ -24,8 +24,10 @@ Pending :: struct {
 	answer:            string,
 	prompt_tokens:     int,
 	completion_tokens: int,
-	prompt_ms:         f64,
-	predicted_ms:      f64,
+	queue_ms:          f64, // arrive -> admitted to a slot
+	prefill_ms:        f64, // start of the decode with the prompt -> first token sampled
+	ttft_ms:           f64, // arrive -> first token sampled
+	predicted_ms:      f64, // first token -> finished
 	failed:            bool,
 }
 
@@ -56,6 +58,7 @@ run_server :: proc(engine: ^Engine) {
 
 	batch := &engine.batch
 	n_ctx_seq := i32(llama.n_ctx_seq(engine.ctx))
+	decode_start := time.tick_now()
 
 	slots: [N_SEQ]Server_Slot
 	defer for &slot in slots {
@@ -82,7 +85,8 @@ run_server :: proc(engine: ^Engine) {
 
 			if slot.n_gen == 0 {
 				slot.first_token = time.tick_now()
-				slot.pending.prompt_ms = time.duration_milliseconds(time.tick_diff(slot.pending.arrive, slot.first_token))
+				slot.pending.prefill_ms = time.duration_milliseconds(time.tick_diff(decode_start, slot.first_token))
+				slot.pending.ttft_ms = time.duration_milliseconds(time.tick_diff(slot.pending.arrive, slot.first_token))
 			}
 
 			if llama.vocab_is_eog(engine.vocab, token) {
@@ -141,6 +145,7 @@ run_server :: proc(engine: ^Engine) {
 			slot.i_batch = batch_add_tokens(batch, tokens, 0, i32(s))
 
 			p.prompt_tokens = len(tokens)
+			p.queue_ms = time.duration_milliseconds(time.tick_since(p.arrive))
 			delete(tokens)
 		}
 
@@ -149,6 +154,7 @@ run_server :: proc(engine: ^Engine) {
 			continue
 		}
 
+		decode_start = time.tick_now()
 		result := llama.decode(engine.ctx, batch^)
 		if result != 0 {
 			fmt.println("decode failed:", result)
@@ -170,7 +176,17 @@ finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
 	p.predicted_ms = time.duration_milliseconds(time.tick_since(slot.first_token))
 
 	status := "cancelled" if sync.atomic_load(&p.cancelled) else "done"
-	fmt.printfln("slot %d %s: %d prompt, %d gen tokens, %.0f ms", s, status, p.prompt_tokens, p.completion_tokens, p.prompt_ms + p.predicted_ms)
+	fmt.printfln(
+		"slot %d %s: %d prompt, %d gen | queue %.0f ms, prefill %.0f ms, ttft %.0f ms, decode %.0f ms",
+		s,
+		status,
+		p.prompt_tokens,
+		p.completion_tokens,
+		p.queue_ms,
+		p.prefill_ms,
+		p.ttft_ms,
+		p.predicted_ms,
+	)
 
 	llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
 	llama.sampler_free(slot.sampler)
@@ -364,11 +380,13 @@ make_response :: proc(p: ^Pending) -> Response {
 	resp.usage.total_tokens = p.prompt_tokens + p.completion_tokens
 
 	resp.timings.prompt_n = p.prompt_tokens
-	resp.timings.prompt_ms = f32(p.prompt_ms)
-	resp.timings.prompt_per_second = f32(f64(p.prompt_tokens) / p.prompt_ms * 1000)
+	resp.timings.prompt_ms = f32(p.prefill_ms)
+	resp.timings.prompt_per_second = f32(f64(p.prompt_tokens) / p.prefill_ms * 1000)
 	resp.timings.predicted_n = p.completion_tokens
 	resp.timings.predicted_ms = f32(p.predicted_ms)
 	resp.timings.predicted_per_second = f32(f64(p.completion_tokens) / p.predicted_ms * 1000)
+	resp.timings.queue_ms = f32(p.queue_ms)
+	resp.timings.ttft_ms = f32(p.ttft_ms)
 
 	return resp
 }

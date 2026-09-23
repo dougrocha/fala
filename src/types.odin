@@ -31,5 +31,7 @@ Response :: struct {
 		predicted_n:          int,
 		predicted_ms:         f32,
 		predicted_per_second: f32,
+		queue_ms:             f32,
+		ttft_ms:              f32,
 	},
 }
