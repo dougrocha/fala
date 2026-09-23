@@ -196,4 +196,10 @@ foreign lib {
 
 	@(link_name = "llama_memory_seq_pos_max")
 	memory_seq_pos_max :: proc(mem: ^Memory, seq_id: i32) -> i32 ---
+
+	@(link_name = "llama_batch_init")
+	batch_init :: proc(n_tokens: i32, embd: i32, n_seq_max: i32) -> Batch ---
+
+	@(link_name = "llama_batch_free")
+	batch_free :: proc(batch: Batch) ---
 }

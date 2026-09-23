@@ -8,11 +8,11 @@ main :: proc() {
 	llama.backend_init()
 	defer llama.backend_free()
 
-	engine, ok := engine_init("models/Qwen3-1.7B-Q8_0.gguf", 4096)
+	engine, ok := engine_init("models/Qwen3-1.7B-Q8_0.gguf", 4096, 2)
 	if !ok {
 		return
 	}
 	defer engine_free(&engine)
 
-	run_chat(&engine)
+	run_batch(&engine)
 }
