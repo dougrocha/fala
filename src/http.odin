@@ -76,7 +76,8 @@ send_sse_headers :: proc(client: net.TCP_Socket) {
 	net.send_tcp(client, transmute([]u8)headers)
 }
 
-send_sse_event :: proc(client: net.TCP_Socket, data: string) {
+send_sse_event :: proc(client: net.TCP_Socket, data: string) -> bool {
 	event := fmt.tprintf("data: %s\n\n", data)
-	net.send_tcp(client, transmute([]u8)event)
+	_, err := net.send_tcp(client, transmute([]u8)event)
+	return err == nil
 }

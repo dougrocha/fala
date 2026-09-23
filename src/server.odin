@@ -20,6 +20,7 @@ Pending :: struct {
 	mutex:             sync.Mutex,
 	stream_buf:        strings.Builder,
 	finished:          bool,
+	cancelled:         bool,
 	answer:            string,
 	prompt_tokens:     int,
 	completion_tokens: int,
@@ -79,7 +80,8 @@ run_server :: proc(engine: ^Engine) {
 
 			if llama.vocab_is_eog(engine.vocab, token) ||
 			   slot.n_gen == slot.pending.max_tokens ||
-			   slot.n_pos >= n_ctx_seq {
+			   slot.n_pos >= n_ctx_seq ||
+			   sync.atomic_load(&slot.pending.cancelled) {
 				p := slot.pending
 				answer := strings.to_string(slot.answer)
 				for len(answer) > 0 && !utf8.valid_string(answer) {
@@ -90,7 +92,8 @@ run_server :: proc(engine: ^Engine) {
 				p.completion_tokens = slot.n_gen
 				p.predicted_ms = time.duration_milliseconds(time.tick_since(slot.first_token))
 
-				fmt.printfln("slot %d done: %d prompt, %d gen tokens, %.0f ms", s, p.prompt_tokens, p.completion_tokens, p.prompt_ms + p.predicted_ms)
+				status := "cancelled" if sync.atomic_load(&p.cancelled) else "done"
+				fmt.printfln("slot %d %s: %d prompt, %d gen tokens, %.0f ms", s, status, p.prompt_tokens, p.completion_tokens, p.prompt_ms + p.predicted_ms)
 
 				llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
 				llama.sampler_free(slot.sampler)
@@ -301,11 +304,31 @@ stream_response :: proc(client: net.TCP_Socket, p: ^Pending) {
 			chunk.choices[0].delta.content = text
 
 			json_body, _ := json.marshal(chunk, allocator = context.temp_allocator)
-			send_sse_event(client, string(json_body))
+			if !send_sse_event(client, string(json_body)) {
+				// client is gone: ask the loop to free the slot, then wait until
+				// it stops using p, because p lives on this thread's stack
+				sync.atomic_store(&p.cancelled, true)
+				wait_finished(p)
+				return
+			}
 		}
 
 		if finished {
 			send_sse_event(client, "[DONE]")
+			return
+		}
+
+		sync.sema_wait(&p.signal)
+	}
+}
+
+wait_finished :: proc(p: ^Pending) {
+	for {
+		sync.mutex_lock(&p.mutex)
+		finished := p.finished
+		sync.mutex_unlock(&p.mutex)
+
+		if finished {
 			return
 		}
 
