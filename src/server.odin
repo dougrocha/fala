@@ -71,6 +71,13 @@ run_server :: proc(engine: ^Engine) {
 				continue
 			}
 
+			if slot.n_gen >= slot.pending.max_tokens ||
+			   slot.n_pos >= n_ctx_seq ||
+			   sync.atomic_load(&slot.pending.cancelled) {
+				finish_slot(engine, &slot, s)
+				continue
+			}
+
 			token := llama.sampler_sample(slot.sampler, engine.ctx, slot.i_batch)
 
 			if slot.n_gen == 0 {
@@ -78,33 +85,8 @@ run_server :: proc(engine: ^Engine) {
 				slot.pending.prompt_ms = time.duration_milliseconds(time.tick_diff(slot.pending.arrive, slot.first_token))
 			}
 
-			if llama.vocab_is_eog(engine.vocab, token) ||
-			   slot.n_gen == slot.pending.max_tokens ||
-			   slot.n_pos >= n_ctx_seq ||
-			   sync.atomic_load(&slot.pending.cancelled) {
-				p := slot.pending
-				answer := strings.to_string(slot.answer)
-				for len(answer) > 0 && !utf8.valid_string(answer) {
-					answer = answer[:len(answer) - 1]
-				}
-
-				p.answer = strings.clone(answer)
-				p.completion_tokens = slot.n_gen
-				p.predicted_ms = time.duration_milliseconds(time.tick_since(slot.first_token))
-
-				status := "cancelled" if sync.atomic_load(&p.cancelled) else "done"
-				fmt.printfln("slot %d %s: %d prompt, %d gen tokens, %.0f ms", s, status, p.prompt_tokens, p.completion_tokens, p.prompt_ms + p.predicted_ms)
-
-				llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
-				llama.sampler_free(slot.sampler)
-				strings.builder_reset(&slot.answer)
-				slot.pending = nil
-
-				sync.mutex_lock(&p.mutex)
-				p.finished = true
-				sync.mutex_unlock(&p.mutex)
-
-				sync.sema_post(&p.signal)
+			if llama.vocab_is_eog(engine.vocab, token) {
+				finish_slot(engine, &slot, s)
 				continue
 			}
 
@@ -138,7 +120,7 @@ run_server :: proc(engine: ^Engine) {
 
 			tokens := tokenize_text(engine.vocab, p.prompt, true)
 
-			if i32(len(tokens)) >= n_ctx_seq {
+			if i32(len(tokens)) >= n_ctx_seq || len(tokens) > BATCH_SIZE {
 				delete(tokens)
 				p.failed = true
 				p.finished = true
@@ -173,6 +155,33 @@ run_server :: proc(engine: ^Engine) {
 			return
 		}
 	}
+}
+
+// finish_slot hands the answer to the waiting connection thread and frees the slot.
+finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
+	p := slot.pending
+	answer := strings.to_string(slot.answer)
+	for len(answer) > 0 && !utf8.valid_string(answer) {
+		answer = answer[:len(answer) - 1]
+	}
+
+	p.answer = strings.clone(answer)
+	p.completion_tokens = slot.n_gen
+	p.predicted_ms = time.duration_milliseconds(time.tick_since(slot.first_token))
+
+	status := "cancelled" if sync.atomic_load(&p.cancelled) else "done"
+	fmt.printfln("slot %d %s: %d prompt, %d gen tokens, %.0f ms", s, status, p.prompt_tokens, p.completion_tokens, p.prompt_ms + p.predicted_ms)
+
+	llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
+	llama.sampler_free(slot.sampler)
+	strings.builder_reset(&slot.answer)
+	slot.pending = nil
+
+	sync.mutex_lock(&p.mutex)
+	p.finished = true
+	sync.mutex_unlock(&p.mutex)
+
+	sync.sema_post(&p.signal)
 }
 
 queue_pop :: proc(server: ^Server) -> ^Pending {
