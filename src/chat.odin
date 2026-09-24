@@ -9,7 +9,7 @@ import "core:time"
 import "lib:llama"
 
 run_chat :: proc(engine: ^Engine) {
-	sampler := make_sampler()
+	sampler := make_sampler(false)
 	defer llama.sampler_free(sampler)
 
 	messages: [dynamic]llama.Chat_Message

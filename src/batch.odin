@@ -20,7 +20,7 @@ PROMPTS := [8]cstring {
 }
 
 run_batch :: proc(engine: ^Engine) {
-	sampler := make_sampler()
+	sampler := make_sampler(false)
 	defer llama.sampler_free(sampler)
 
 	batch := &engine.batch

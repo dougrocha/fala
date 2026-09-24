@@ -1,14 +1,16 @@
 package main
 
 Request :: struct {
-	messages:   []Message,
-	max_tokens: int,
-	stream:     bool,
+	messages:         []Message,
+	max_tokens:       int,
+	stream:           bool,
+	reasoning_effort: string,
 }
 
 Message :: struct {
-	role:    string,
-	content: string,
+	role:              string,
+	reasoning_content: string,
+	content:           string,
 }
 
 Response :: struct {

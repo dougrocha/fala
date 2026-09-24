@@ -8,6 +8,8 @@ import "core:strings"
 import "lib:llama"
 
 THINK_OFF :: "<think>\n\n</think>\n\n"
+THINK_ON :: "<think>\n"
+THINK_END :: "</think>\n\n"
 
 BATCH_SIZE :: 2048
 
@@ -61,12 +63,12 @@ engine_free :: proc(engine: ^Engine) {
 	llama.model_free(engine.model)
 }
 
-make_sampler :: proc() -> ^llama.Sampler {
+make_sampler :: proc(reasoning: bool) -> ^llama.Sampler {
 	sampler := llama.sampler_chain_init(llama.Sampler_Chain_Params{})
 
-	llama.sampler_chain_add(sampler, llama.sampler_init_top_k(40))
-	llama.sampler_chain_add(sampler, llama.sampler_init_top_p(0.9, 1))
-	llama.sampler_chain_add(sampler, llama.sampler_init_temp(0.7))
+	llama.sampler_chain_add(sampler, llama.sampler_init_top_k(20))
+	llama.sampler_chain_add(sampler, llama.sampler_init_top_p(0.95 if reasoning else 0.8, 1))
+	llama.sampler_chain_add(sampler, llama.sampler_init_temp(0.6 if reasoning else 0.7))
 	llama.sampler_chain_add(sampler, llama.sampler_init_dist(llama.DEFAULT_SEED))
 
 	return sampler
@@ -128,12 +130,21 @@ format_chat :: proc(engine: ^Engine, user: cstring) -> string {
 	return fmt.aprintf("%s%s", string(buf[:n]), THINK_OFF)
 }
 
-format_messages :: proc(tmpl: cstring, messages: []Message) -> (prompt: string, ok: bool) {
+format_messages :: proc(tmpl: cstring, messages: []Message, effort: string) -> (prompt: string, ok: bool) {
+	reasoning := effort != "low"
 	chat := make([]llama.Chat_Message, len(messages), context.temp_allocator)
 	for m, i in messages {
+		content := m.content
+		if m.role == "assistant" {
+			if reasoning {
+				content = fmt.tprintf("%s%s%s%s", THINK_ON, m.reasoning_content, THINK_END, m.content)
+			} else {
+				content = fmt.tprintf("%s%s", THINK_OFF, m.content)
+			}
+		}
 		chat[i] = {
 			role    = strings.clone_to_cstring(m.role, context.temp_allocator),
-			content = strings.clone_to_cstring(m.content, context.temp_allocator),
+			content = strings.clone_to_cstring(content, context.temp_allocator),
 		}
 	}
 
@@ -144,7 +155,8 @@ format_messages :: proc(tmpl: cstring, messages: []Message) -> (prompt: string, 
 		return
 	}
 
-	return fmt.tprintf("%s%s", string(buf[:n]), THINK_OFF), true
+	mode := THINK_ON if reasoning else THINK_OFF
+	return fmt.tprintf("%s%s", string(buf[:n]), mode), true
 }
 
 append_token_piece :: proc(vocab: ^llama.Vocab, token: llama.Token, answer: ^strings.Builder) -> string {

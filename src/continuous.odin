@@ -105,7 +105,7 @@ run_continuous :: proc(engine: ^Engine) {
 
 			slot.active = true
 			slot.req = next_req
-			slot.sampler = make_sampler()
+			slot.sampler = make_sampler(false)
 			slot.n_pos = i32(len(tokens))
 			slot.n_gen = 0
 			slot.i_batch = batch_add_tokens(batch, tokens, 0, i32(s))

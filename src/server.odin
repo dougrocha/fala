@@ -12,6 +12,9 @@ import "core:unicode/utf8"
 import "lib:llama"
 
 Pending :: struct {
+	chat_id:           string,
+	reasoning_effort:  string,
+	reasoning_budget:  int,
 	prompt:            string,
 	max_tokens:        int,
 	arrive:            time.Tick,
@@ -22,6 +25,7 @@ Pending :: struct {
 	finished:          bool,
 	cancelled:         bool,
 	answer:            string,
+	reasoning_content: string,
 	prompt_tokens:     int,
 	completion_tokens: int,
 	queue_ms:          f64, // arrive -> admitted to a slot
@@ -29,10 +33,12 @@ Pending :: struct {
 	ttft_ms:           f64, // arrive -> first token sampled
 	predicted_ms:      f64, // first token -> finished
 	failed:            bool,
+	overloaded:        bool,
 }
 
 Server :: struct {
 	tmpl:  cstring,
+	port:  int,
 	mutex: sync.Mutex,
 	queue: [dynamic]^Pending,
 	wake:  sync.Sema,
@@ -40,17 +46,23 @@ Server :: struct {
 
 Server_Slot :: struct {
 	pending:     ^Pending,
+	chat_id:     string,
+	tokens:      [dynamic]llama.Token,
+	last_use:    time.Tick,
 	sampler:     ^llama.Sampler,
 	n_pos:       i32,
 	n_gen:       int,
+	reasoning:   bool,
+	reasoning_n: int,
 	i_batch:     i32,
 	first_token: time.Tick,
 	answer:      strings.Builder,
 }
 
-run_server :: proc(engine: ^Engine) {
+run_server :: proc(engine: ^Engine, port: int) {
 	server := Server {
 		tmpl = engine.tmpl,
+		port = port,
 	}
 	defer delete(server.queue)
 
@@ -62,6 +74,8 @@ run_server :: proc(engine: ^Engine) {
 
 	slots: [N_SEQ]Server_Slot
 	defer for &slot in slots {
+		delete(slot.chat_id)
+		delete(slot.tokens)
 		strings.builder_destroy(&slot.answer)
 	}
 
@@ -77,7 +91,28 @@ run_server :: proc(engine: ^Engine) {
 			if slot.n_gen >= slot.pending.max_tokens ||
 			   slot.n_pos >= n_ctx_seq ||
 			   sync.atomic_load(&slot.pending.cancelled) {
-				finish_slot(engine, &slot, s)
+				finish_slot(engine, &slot, s, server.port)
+				continue
+			}
+
+			if slot.reasoning && slot.reasoning_n >= slot.pending.reasoning_budget {
+				end_tokens := tokenize_text(engine.vocab, THINK_END, false)
+				if slot.n_pos + i32(len(end_tokens)) >= n_ctx_seq {
+					delete(end_tokens)
+					finish_slot(engine, &slot, s, server.port)
+					continue
+				}
+
+				strings.write_string(&slot.answer, THINK_END)
+				for end_token in end_tokens {
+					slot.i_batch = batch.n_tokens
+					batch_add(batch, end_token, slot.n_pos, i32(s), true)
+					append(&slot.tokens, end_token)
+					slot.n_pos += 1
+					slot.n_gen += 1
+				}
+				delete(end_tokens)
+				slot.reasoning = false
 				continue
 			}
 
@@ -90,13 +125,21 @@ run_server :: proc(engine: ^Engine) {
 			}
 
 			if llama.vocab_is_eog(engine.vocab, token) {
-				finish_slot(engine, &slot, s)
+				finish_slot(engine, &slot, s, server.port)
 				continue
 			}
 
 			piece := append_token_piece(engine.vocab, token, &slot.answer)
+			append(&slot.tokens, token)
+			was_reasoning := slot.reasoning
+			if slot.reasoning {
+				slot.reasoning_n += 1
+				if strings.contains(piece, "</think>") {
+					slot.reasoning = false
+				}
+			}
 
-			if slot.pending.stream {
+			if slot.pending.stream && !was_reasoning {
 				sync.mutex_lock(&slot.pending.mutex)
 				strings.write_string(&slot.pending.stream_buf, piece)
 				sync.mutex_unlock(&slot.pending.mutex)
@@ -111,16 +154,25 @@ run_server :: proc(engine: ^Engine) {
 			slot.n_gen += 1
 		}
 
-		// 2. put queued requests into free slots, prompt goes into the same batch
-		for &slot, s in slots {
-			if slot.pending != nil {
-				continue
-			}
-
+		// 2. put queued requests into their conversation slots
+		for _ in 0 ..< N_SEQ {
 			p := queue_pop(&server)
 			if p == nil {
 				break
 			}
+
+			s := find_slot(&slots, p.chat_id)
+			if s == -2 {
+				p.overloaded = true
+				p.finished = true
+				sync.sema_post(&p.signal)
+				continue
+			}
+			if s == -1 {
+				queue_push_front(&server, p)
+				break
+			}
+			slot := &slots[s]
 
 			tokens := tokenize_text(engine.vocab, p.prompt, true)
 
@@ -132,20 +184,53 @@ run_server :: proc(engine: ^Engine) {
 				continue
 			}
 
-			if int(batch.n_tokens) + len(tokens) > BATCH_SIZE {
+			cached := 0
+			if p.chat_id != "" && slot.chat_id == p.chat_id && tokens_have_prefix(tokens, slot.tokens[:]) {
+				cached = len(slot.tokens)
+			}
+
+			new_tokens := tokens[cached:]
+			if len(new_tokens) == 0 {
+				delete(tokens)
+				p.failed = true
+				p.finished = true
+				sync.sema_post(&p.signal)
+				continue
+			}
+
+			if int(batch.n_tokens) + len(new_tokens) > BATCH_SIZE {
 				delete(tokens)
 				queue_push_front(&server, p)
 				break
 			}
 
+			if cached == 0 {
+				clear_slot_cache(engine, slot, s)
+				if p.chat_id != "" {
+					slot.chat_id = strings.clone(p.chat_id)
+				}
+			}
+
 			slot.pending = p
-			slot.sampler = make_sampler()
+			slot.sampler = make_sampler(p.reasoning_effort != "low")
 			slot.n_pos = i32(len(tokens))
 			slot.n_gen = 0
-			slot.i_batch = batch_add_tokens(batch, tokens, 0, i32(s))
+			slot.reasoning = p.reasoning_effort != "low"
+			slot.reasoning_n = 0
+			slot.i_batch = batch_add_tokens(batch, new_tokens, i32(cached), i32(s))
+			append(&slot.tokens, ..new_tokens)
 
 			p.prompt_tokens = len(tokens)
 			p.queue_ms = time.duration_milliseconds(time.tick_since(p.arrive))
+			fmt.printfln(
+				"worker %d: chat=%s slot=%d start: %d cached, %d new, max %d gen",
+				server.port,
+				p.chat_id if p.chat_id != "" else "untracked",
+				s,
+				cached,
+				len(new_tokens),
+				p.max_tokens,
+			)
 			delete(tokens)
 		}
 
@@ -164,9 +249,17 @@ run_server :: proc(engine: ^Engine) {
 }
 
 // finish_slot hands the answer to the waiting connection thread and frees the slot.
-finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
+finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int, port: int) {
 	p := slot.pending
-	answer := strings.to_string(slot.answer)
+	output := strings.to_string(slot.answer)
+	answer := output
+	if p.reasoning_effort != "low" {
+		end := strings.index(output, "</think>")
+		if end >= 0 {
+			p.reasoning_content = strings.clone(strings.trim_space(output[:end]))
+			answer = strings.trim_space(output[end + len("</think>"):])
+		}
+	}
 	for len(answer) > 0 && !utf8.valid_string(answer) {
 		answer = answer[:len(answer) - 1]
 	}
@@ -177,7 +270,9 @@ finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
 
 	status := "cancelled" if sync.atomic_load(&p.cancelled) else "done"
 	fmt.printfln(
-		"slot %d %s: %d prompt, %d gen | queue %.0f ms, prefill %.0f ms, ttft %.0f ms, decode %.0f ms",
+		"worker %d: chat=%s slot=%d %s: %d prompt, %d gen | queue %.0f ms, prefill %.0f ms, ttft %.0f ms, decode %.0f ms",
+		port,
+		p.chat_id if p.chat_id != "" else "untracked",
 		s,
 		status,
 		p.prompt_tokens,
@@ -188,7 +283,11 @@ finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
 		p.predicted_ms,
 	)
 
-	llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
+	if p.chat_id == "" {
+		clear_slot_cache(engine, slot, s)
+	} else {
+		slot.last_use = time.tick_now()
+	}
 	llama.sampler_free(slot.sampler)
 	strings.builder_reset(&slot.answer)
 	slot.pending = nil
@@ -198,6 +297,44 @@ finish_slot :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
 	sync.mutex_unlock(&p.mutex)
 
 	sync.sema_post(&p.signal)
+}
+
+find_slot :: proc(slots: ^[N_SEQ]Server_Slot, chat_id: string) -> int {
+	if chat_id != "" {
+		for &slot, s in slots {
+			if slot.chat_id == chat_id {
+				return s if slot.pending == nil else -1
+			}
+		}
+	}
+
+	for &slot, s in slots {
+		if slot.pending == nil && slot.chat_id == "" {
+			return s
+		}
+	}
+
+	return -2
+}
+
+tokens_have_prefix :: proc(tokens: []llama.Token, prefix: []llama.Token) -> bool {
+	if len(prefix) > len(tokens) {
+		return false
+	}
+
+	for token, i in prefix {
+		if tokens[i] != token {
+			return false
+		}
+	}
+	return true
+}
+
+clear_slot_cache :: proc(engine: ^Engine, slot: ^Server_Slot, s: int) {
+	llama.memory_seq_rm(engine.mem, i32(s), -1, -1)
+	delete(slot.chat_id)
+	slot.chat_id = ""
+	clear(&slot.tokens)
 }
 
 queue_pop :: proc(server: ^Server) -> ^Pending {
@@ -229,7 +366,8 @@ queue_push_front :: proc(server: ^Server, p: ^Pending) {
 }
 
 accept_loop :: proc(server: ^Server) {
-	endpoint, _ := net.parse_endpoint("127.0.0.1:8080")
+	address := fmt.tprintf("127.0.0.1:%d", server.port)
+	endpoint, _ := net.parse_endpoint(address)
 
 	listener, err := net.listen_tcp(endpoint)
 	if err != nil {
@@ -237,7 +375,7 @@ accept_loop :: proc(server: ^Server) {
 		return
 	}
 
-	fmt.println("listening on http://127.0.0.1:8080")
+	fmt.printfln("worker listening on http://%s", address)
 
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
@@ -260,6 +398,11 @@ handle_connection :: proc(server: ^Server, client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(head, "GET /health ") {
+		send_http(client, "200 OK", `{"status":"ok"}`)
+		return
+	}
+
 	if !strings.has_prefix(head, "POST /v1/chat/completions ") {
 		send_http(client, "404 Not Found", "{}")
 		return
@@ -271,23 +414,45 @@ handle_connection :: proc(server: ^Server, client: net.TCP_Socket) {
 		return
 	}
 
-	prompt, prompt_ok := format_messages(server.tmpl, req.messages)
+	effort := req.reasoning_effort
+	if effort == "" {
+		effort = "low"
+	}
+	if effort != "low" && effort != "medium" && effort != "high" {
+		send_http(client, "400 Bad Request", `{"error":"reasoning_effort must be low, medium, or high"}`)
+		return
+	}
+
+	prompt, prompt_ok := format_messages(server.tmpl, req.messages, effort)
 	if !prompt_ok {
 		send_http(client, "400 Bad Request", "{}")
 		return
 	}
 
 	pending := Pending {
-		prompt     = prompt,
-		max_tokens = req.max_tokens if req.max_tokens > 0 else 256,
-		arrive     = time.tick_now(),
-		stream     = req.stream,
+		chat_id          = header_value(head, "x-conversation-id:"),
+		reasoning_effort = effort,
+		prompt            = prompt,
+		max_tokens        = req.max_tokens if req.max_tokens > 0 else 256,
+		arrive            = time.tick_now(),
+		stream            = req.stream,
+	}
+	if effort == "medium" {
+		pending.reasoning_budget = pending.max_tokens / 2
+	} else if effort == "high" {
+		pending.reasoning_budget = pending.max_tokens * 3 / 4
 	}
 	defer strings.builder_destroy(&pending.stream_buf)
 
 	queue_push(server, &pending)
 	sync.sema_wait(&pending.signal)
 	defer delete(pending.answer)
+	defer delete(pending.reasoning_content)
+
+	if pending.overloaded {
+		send_http(client, "503 Service Unavailable", `{"error":"worker conversation capacity reached"}`)
+		return
+	}
 
 	if pending.stream && !pending.failed {
 		stream_response(client, &pending)
@@ -373,6 +538,7 @@ make_response :: proc(p: ^Pending) -> Response {
 	resp: Response
 	resp.choices = make(type_of(resp.choices), 1, context.temp_allocator)
 	resp.choices[0].message.role = "assistant"
+	resp.choices[0].message.reasoning_content = p.reasoning_content
 	resp.choices[0].message.content = p.answer
 
 	resp.usage.prompt_tokens = p.prompt_tokens
