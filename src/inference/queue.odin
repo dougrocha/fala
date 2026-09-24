@@ -36,17 +36,23 @@ Queue :: struct {
 	wake:  sync.Sema,
 }
 
-queue_pop :: proc(queue: ^Queue) -> ^Pending {
+// queue_get returns the request at index i, or nil when i is past the end.
+queue_get :: proc(queue: ^Queue, i: int) -> ^Pending {
 	sync.mutex_lock(&queue.mutex)
 	defer sync.mutex_unlock(&queue.mutex)
 
-	if len(queue.items) == 0 {
+	if i >= len(queue.items) {
 		return nil
 	}
 
-	p := queue.items[0]
-	ordered_remove(&queue.items, 0)
-	return p
+	return queue.items[i]
+}
+
+queue_remove :: proc(queue: ^Queue, i: int) {
+	sync.mutex_lock(&queue.mutex)
+	defer sync.mutex_unlock(&queue.mutex)
+
+	ordered_remove(&queue.items, i)
 }
 
 queue_push :: proc(queue: ^Queue, p: ^Pending) {
@@ -55,13 +61,6 @@ queue_push :: proc(queue: ^Queue, p: ^Pending) {
 	sync.mutex_unlock(&queue.mutex)
 
 	sync.sema_post(&queue.wake)
-}
-
-queue_push_front :: proc(queue: ^Queue, p: ^Pending) {
-	sync.mutex_lock(&queue.mutex)
-	defer sync.mutex_unlock(&queue.mutex)
-
-	inject_at(&queue.items, 0, p)
 }
 
 wait_finished :: proc(p: ^Pending) {

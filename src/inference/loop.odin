@@ -112,11 +112,12 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 			slot.n_gen += 1
 		}
 
-		// 2. put queued requests into their conversation slots
-		skipped: [N_SEQ]^Pending
-		n_skipped := 0
-		for _ in 0 ..< N_SEQ {
-			p := queue_pop(queue)
+		// 2. put queued requests into their conversation slots.
+		// A request leaves the queue only when it starts or fails. Only this
+		// thread removes items, so index i stays valid while others append.
+		i := 0
+		for {
+			p := queue_get(queue, i)
 			if p == nil {
 				break
 			}
@@ -124,12 +125,10 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 			s := find_slot(&slots, p.chat_id)
 			if s == -1 {
 				// its conversation is still generating: let later requests go first
-				skipped[n_skipped] = p
-				n_skipped += 1
+				i += 1
 				continue
 			}
 			if s == -2 {
-				queue_push_front(queue, p)
 				break
 			}
 			slot := &slots[s]
@@ -138,6 +137,7 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 
 			if i32(len(tokens)) >= n_ctx_seq || len(tokens) > BATCH_SIZE {
 				delete(tokens)
+				queue_remove(queue, i)
 				p.failed = true
 				p.finished = true
 				sync.sema_post(&p.signal)
@@ -152,6 +152,7 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 			new_tokens := tokens[cached:]
 			if len(new_tokens) == 0 {
 				delete(tokens)
+				queue_remove(queue, i)
 				p.failed = true
 				p.finished = true
 				sync.sema_post(&p.signal)
@@ -160,9 +161,10 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 
 			if int(batch.n_tokens) + len(new_tokens) > BATCH_SIZE {
 				delete(tokens)
-				queue_push_front(queue, p)
 				break
 			}
+
+			queue_remove(queue, i)
 
 			if cached == 0 {
 				clear_slot_cache(engine, slot, s)
@@ -192,11 +194,6 @@ run_loop :: proc(engine: ^Engine, queue: ^Queue, port: int) {
 				p.max_tokens,
 			)
 			delete(tokens)
-		}
-
-		// put skipped requests back at the front, in their old order
-		for i := n_skipped - 1; i >= 0; i -= 1 {
-			queue_push_front(queue, skipped[i])
 		}
 
 		if batch.n_tokens == 0 {
