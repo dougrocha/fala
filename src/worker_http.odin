@@ -154,20 +154,6 @@ stream_response :: proc(client: net.TCP_Socket, p: ^inference.Pending) {
 	}
 }
 
-wait_finished :: proc(p: ^inference.Pending) {
-	for {
-		sync.mutex_lock(&p.mutex)
-		finished := p.finished
-		sync.mutex_unlock(&p.mutex)
-
-		if finished {
-			return
-		}
-
-		sync.sema_wait(&p.signal)
-	}
-}
-
 Stream_Chunk :: struct {
 	choices: []struct {
 		delta: struct {

@@ -254,10 +254,11 @@ finish_slot :: proc(engine: ^Engine, slot: ^Slot, s: int, port: int) {
 	strings.builder_reset(&slot.answer)
 	slot.pending = nil
 
+	// post before unlock: the reader can see finished only after the post,
+	// so it cannot free p while the post still writes to it
 	sync.mutex_lock(&p.mutex)
+	defer sync.mutex_unlock(&p.mutex)
 	p.finished = true
-	sync.mutex_unlock(&p.mutex)
-
 	sync.sema_post(&p.signal)
 }
 

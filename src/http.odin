@@ -24,7 +24,11 @@ read_http_request :: proc(client: net.TCP_Socket, buf: []u8) -> (head: string, b
 		}
 
 		body_start := header_end + 4
-		body_end := body_start + content_length(text[:header_end])
+		length := content_length(text[:header_end])
+		if length < 0 {
+			return
+		}
+		body_end := body_start + length
 
 		if total >= body_end {
 			return text[:header_end], buf[body_start:body_end], true
