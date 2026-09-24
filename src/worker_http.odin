@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -18,8 +19,9 @@ accept_loop :: proc(worker: ^Worker) {
 
 	listener, err := net.listen_tcp(endpoint)
 	if err != nil {
+		// stop the whole process: run_loop has no way to get requests
 		fmt.println("listen failed:", err)
-		return
+		os.exit(1)
 	}
 
 	fmt.printfln("worker listening on http://%s", address)
