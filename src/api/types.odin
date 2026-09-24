@@ -1,4 +1,6 @@
-package main
+package api
+
+import "../inference"
 
 Request :: struct {
 	messages:         []Message,
@@ -7,11 +9,7 @@ Request :: struct {
 	reasoning_effort: string,
 }
 
-Message :: struct {
-	role:              string,
-	reasoning_content: string,
-	content:           string,
-}
+Message :: inference.Message
 
 Response :: struct {
 	choices: []struct {

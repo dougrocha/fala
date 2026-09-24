@@ -81,3 +81,19 @@ send_sse_event :: proc(client: net.TCP_Socket, data: string) -> bool {
 	_, err := net.send_tcp(client, transmute([]u8)event)
 	return err == nil
 }
+
+header_value :: proc(headers: string, name: string) -> string {
+	lower := strings.to_lower(headers, context.temp_allocator)
+	start := strings.index(lower, name)
+	if start < 0 {
+		return ""
+	}
+
+	value := headers[start + len(name):]
+	end := strings.index(value, "\r\n")
+	if end >= 0 {
+		value = value[:end]
+	}
+
+	return strings.trim_space(value)
+}

@@ -1,4 +1,4 @@
-package main
+package experiments
 
 import "core:fmt"
 import "core:strings"
@@ -6,7 +6,7 @@ import "core:time"
 
 import "lib:llama"
 
-N_SEQ :: 4
+import "../inference"
 
 PROMPTS := [8]cstring {
 	"What is the capital of France?",
@@ -19,21 +19,21 @@ PROMPTS := [8]cstring {
 	"Describe the taste of fresh bread.",
 }
 
-run_batch :: proc(engine: ^Engine) {
-	sampler := make_sampler(false)
+run_batch :: proc(engine: ^inference.Engine) {
+	sampler := inference.make_sampler(false)
 	defer llama.sampler_free(sampler)
 
 	batch := &engine.batch
 	batch.n_tokens = 0
 
-	last_index: [N_SEQ]i32
-	n_pos: [N_SEQ]i32
+	last_index: [inference.N_SEQ]i32
+	n_pos: [inference.N_SEQ]i32
 
-	for seq in 0 ..< N_SEQ {
+	for seq in 0 ..< inference.N_SEQ {
 		prompt := format_chat(engine, PROMPTS[seq % len(PROMPTS)])
-		tokens := tokenize_text(engine.vocab, prompt, true)
+		tokens := inference.tokenize_text(engine.vocab, prompt, true)
 
-		last_index[seq] = batch_add_tokens(batch, tokens, 0, i32(seq))
+		last_index[seq] = inference.batch_add_tokens(batch, tokens, 0, i32(seq))
 		n_pos[seq] = i32(len(tokens))
 		fmt.printfln("seq %d: %d prompt tokens", seq, len(tokens))
 
@@ -49,13 +49,13 @@ run_batch :: proc(engine: ^Engine) {
 
 	fmt.println("prefill complete:", batch.n_tokens, "tokens in 1 decode")
 
-	answers: [N_SEQ]strings.Builder
+	answers: [inference.N_SEQ]strings.Builder
 	defer for &answer in answers {
 		strings.builder_destroy(&answer)
 	}
 
-	n_gen: [N_SEQ]int
-	done: [N_SEQ]bool
+	n_gen: [inference.N_SEQ]int
+	done: [inference.N_SEQ]bool
 
 	steps := 0
 	gen_start := time.tick_now()
@@ -63,7 +63,7 @@ run_batch :: proc(engine: ^Engine) {
 	for {
 		batch.n_tokens = 0
 
-		for seq in 0 ..< N_SEQ {
+		for seq in 0 ..< inference.N_SEQ {
 			if done[seq] {
 				continue
 			}
@@ -75,10 +75,10 @@ run_batch :: proc(engine: ^Engine) {
 				continue
 			}
 
-			append_token_piece(engine.vocab, token, &answers[seq])
+			inference.append_token_piece(engine.vocab, token, &answers[seq])
 
 			last_index[seq] = batch.n_tokens
-			batch_add(batch, token, n_pos[seq], i32(seq), true)
+			inference.batch_add(batch, token, n_pos[seq], i32(seq), true)
 
 			n_pos[seq] += 1
 			n_gen[seq] += 1
@@ -103,7 +103,7 @@ run_batch :: proc(engine: ^Engine) {
 		total += n
 	}
 
-	for seq in 0 ..< N_SEQ {
+	for seq in 0 ..< inference.N_SEQ {
 		fmt.printfln("\nseq %d (%d tokens): %s", seq, n_gen[seq], strings.to_string(answers[seq]))
 	}
 
@@ -114,4 +114,20 @@ run_batch :: proc(engine: ^Engine) {
 		gen_ms,
 		f64(total) / gen_ms * 1000,
 	)
+}
+
+format_chat :: proc(engine: ^inference.Engine, user: cstring) -> string {
+	messages := [2]llama.Chat_Message {
+		{role = "system", content = "Answer in under 60 words."},
+		{role = "user", content = user},
+	}
+
+	buf: [4096]u8
+	n := llama.chat_apply_template(engine.tmpl, &messages[0], len(messages), true, &buf[0], i32(len(buf)))
+
+	if n < 0 || n > i32(len(buf)) {
+		return ""
+	}
+
+	return fmt.aprintf("%s%s", string(buf[:n]), inference.THINK_OFF)
 }

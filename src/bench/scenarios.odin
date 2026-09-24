@@ -1,4 +1,4 @@
-package main
+package bench
 
 PROMPT_XS :: "Explain how virtual memory paging works on x86-64."
 

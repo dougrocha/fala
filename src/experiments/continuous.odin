@@ -1,10 +1,12 @@
-package main
+package experiments
 
 import "core:fmt"
 import "core:strings"
 import "core:time"
 
 import "lib:llama"
+
+import "../inference"
 
 Gen_Request :: struct {
 	prompt:     cstring,
@@ -23,7 +25,7 @@ Slot :: struct {
 	answer:   strings.Builder,
 }
 
-run_continuous :: proc(engine: ^Engine) {
+run_continuous :: proc(engine: ^inference.Engine) {
 	requests := [8]Gen_Request {
 		{PROMPTS[0], 0, 128},
 		{PROMPTS[1], 0, 128},
@@ -37,7 +39,7 @@ run_continuous :: proc(engine: ^Engine) {
 
 	batch := &engine.batch
 
-	slots: [N_SEQ]Slot
+	slots: [inference.N_SEQ]Slot
 	defer for &slot in slots {
 		strings.builder_destroy(&slot.answer)
 	}
@@ -84,10 +86,10 @@ run_continuous :: proc(engine: ^Engine) {
 				continue
 			}
 
-			append_token_piece(engine.vocab, token, &slot.answer)
+			inference.append_token_piece(engine.vocab, token, &slot.answer)
 
 			slot.i_batch = batch.n_tokens
-			batch_add(batch, token, slot.n_pos, i32(s), true)
+			inference.batch_add(batch, token, slot.n_pos, i32(s), true)
 
 			slot.n_pos += 1
 			slot.n_gen += 1
@@ -101,14 +103,14 @@ run_continuous :: proc(engine: ^Engine) {
 			}
 
 			prompt := format_chat(engine, requests[next_req].prompt)
-			tokens := tokenize_text(engine.vocab, prompt, true)
+			tokens := inference.tokenize_text(engine.vocab, prompt, true)
 
 			slot.active = true
 			slot.req = next_req
-			slot.sampler = make_sampler(false)
+			slot.sampler = inference.make_sampler(false)
 			slot.n_pos = i32(len(tokens))
 			slot.n_gen = 0
-			slot.i_batch = batch_add_tokens(batch, tokens, 0, i32(s))
+			slot.i_batch = inference.batch_add_tokens(batch, tokens, 0, i32(s))
 			slot.admit_ms = now_ms
 
 			fmt.printfln(

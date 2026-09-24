@@ -1,9 +1,11 @@
-package main
+package bench
 
 import "core:fmt"
 import "core:sync"
 import "core:thread"
 import "core:time"
+
+import "../api"
 
 Work_Item :: struct {
 	prompt:     string,
@@ -11,7 +13,7 @@ Work_Item :: struct {
 }
 
 Timed_Result :: struct {
-	response:      Response,
+	response:      api.Response,
 	start_offset:  f64,
 	finish_offset: f64,
 }
@@ -28,7 +30,7 @@ Worker_Slot :: struct {
 	run_start:     time.Tick,
 	start_offset:  f64,
 	finish_offset: f64,
-	response:      Response,
+	response:      api.Response,
 	ok:            bool,
 	done:          bool,
 	inactive:      bool,
@@ -52,7 +54,7 @@ print_result :: proc(
 	index: int,
 	dispatched_offset: f64,
 	finish_offset: f64,
-	response: Response,
+	response: api.Response,
 ) -> (
 	latency_ms: f64,
 ) {

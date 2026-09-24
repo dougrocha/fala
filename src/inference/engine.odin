@@ -1,4 +1,4 @@
-package main
+package inference
 
 import "core:c"
 import "core:c/libc"
@@ -12,6 +12,14 @@ THINK_ON :: "<think>\n"
 THINK_END :: "</think>\n\n"
 
 BATCH_SIZE :: 2048
+
+N_SEQ :: 4
+
+Message :: struct {
+	role:              string,
+	reasoning_content: string,
+	content:           string,
+}
 
 Engine :: struct {
 	model: ^llama.Model,
@@ -112,22 +120,6 @@ batch_add_tokens :: proc(batch: ^llama.Batch, tokens: []llama.Token, start_pos: 
 	}
 
 	return batch.n_tokens - 1
-}
-
-format_chat :: proc(engine: ^Engine, user: cstring) -> string {
-	messages := [2]llama.Chat_Message {
-		{role = "system", content = "Answer in under 60 words."},
-		{role = "user", content = user},
-	}
-
-	buf: [4096]u8
-	n := llama.chat_apply_template(engine.tmpl, &messages[0], len(messages), true, &buf[0], i32(len(buf)))
-
-	if n < 0 || n > i32(len(buf)) {
-		return ""
-	}
-
-	return fmt.aprintf("%s%s", string(buf[:n]), THINK_OFF)
 }
 
 format_messages :: proc(tmpl: cstring, messages: []Message, effort: string) -> (prompt: string, ok: bool) {

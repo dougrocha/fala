@@ -1,4 +1,4 @@
-package main
+package experiments
 
 import "core:c"
 import "core:fmt"
@@ -8,8 +8,10 @@ import "core:time"
 
 import "lib:llama"
 
-run_chat :: proc(engine: ^Engine) {
-	sampler := make_sampler(false)
+import "../inference"
+
+run_chat :: proc(engine: ^inference.Engine) {
+	sampler := inference.make_sampler(false)
 	defer llama.sampler_free(sampler)
 
 	messages: [dynamic]llama.Chat_Message
@@ -56,14 +58,14 @@ run_chat :: proc(engine: ^Engine) {
 			break
 		}
 
-		prompt := fmt.aprintf("%s%s", string(formatted[prev_len:new_len]), THINK_OFF)
-		tokens := tokenize_text(engine.vocab, prompt, prev_len == 0)
+		prompt := fmt.aprintf("%s%s", string(formatted[prev_len:new_len]), inference.THINK_OFF)
+		tokens := inference.tokenize_text(engine.vocab, prompt, prev_len == 0)
 		n_past := llama.memory_seq_pos_max(engine.mem, 0) + 1
 
 		pp_start := time.tick_now()
 
 		engine.batch.n_tokens = 0
-		last := batch_add_tokens(&engine.batch, tokens, n_past, 0)
+		last := inference.batch_add_tokens(&engine.batch, tokens, n_past, 0)
 		n_past += i32(len(tokens))
 
 		result := llama.decode(engine.ctx, engine.batch)
@@ -85,11 +87,11 @@ run_chat :: proc(engine: ^Engine) {
 				break
 			}
 
-			fmt.print(append_token_piece(engine.vocab, next_token, &answer))
+			fmt.print(inference.append_token_piece(engine.vocab, next_token, &answer))
 			n_generated += 1
 
 			engine.batch.n_tokens = 0
-			last = batch_add_tokens(&engine.batch, {next_token}, n_past, 0)
+			last = inference.batch_add_tokens(&engine.batch, {next_token}, n_past, 0)
 			n_past += 1
 
 			result = llama.decode(engine.ctx, engine.batch)
@@ -111,7 +113,7 @@ run_chat :: proc(engine: ^Engine) {
 			llama.memory_seq_pos_max(engine.mem, 0) + 1,
 		)
 
-		content := fmt.aprintf("%s%s", THINK_OFF, strings.to_string(answer))
+		content := fmt.aprintf("%s%s", inference.THINK_OFF, strings.to_string(answer))
 		append(
 			&messages,
 			llama.Chat_Message{role = "assistant", content = strings.clone_to_cstring(content)},

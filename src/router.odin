@@ -103,22 +103,6 @@ route_connection :: proc(router: ^Router, client: net.TCP_Socket) {
 	}
 }
 
-header_value :: proc(headers: string, name: string) -> string {
-	lower := strings.to_lower(headers, context.temp_allocator)
-	start := strings.index(lower, name)
-	if start < 0 {
-		return ""
-	}
-
-	value := headers[start + len(name):]
-	end := strings.index(value, "\r\n")
-	if end >= 0 {
-		value = value[:end]
-	}
-
-	return strings.trim_space(value)
-}
-
 acquire_worker :: proc(router: ^Router, chat_id: string) -> ^Router_Worker {
 	sync.mutex_lock(&router.mutex)
 	defer sync.mutex_unlock(&router.mutex)

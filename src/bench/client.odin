@@ -1,20 +1,22 @@
-package main
+package bench
 
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:strings"
 
+import "../api"
+
 IP :: "127.0.0.1"
 PORT :: 8080
 
-send_completion :: proc(message: string, max_tokens: int) -> (response: Response, ok: bool) {
-	msg := Message {
+send_completion :: proc(message: string, max_tokens: int) -> (response: api.Response, ok: bool) {
+	msg := api.Message {
 		role    = "user",
 		content = message,
 	}
 
-	api_request := Request {
+	api_request := api.Request {
 		max_tokens = max_tokens,
 		messages   = {msg},
 	}
@@ -113,8 +115,8 @@ read_http_response :: proc(sock: net.TCP_Socket) -> (body: []u8, ok: bool) {
 	return
 }
 
-parse_response :: proc(body: []u8) -> (response: Response, ok: bool) {
-	res: Response
+parse_response :: proc(body: []u8) -> (response: api.Response, ok: bool) {
+	res: api.Response
 	unmarshal_err := json.unmarshal(body, &res)
 	if unmarshal_err != nil {
 		fmt.printfln("Could not unmarshal body: %v", unmarshal_err)
