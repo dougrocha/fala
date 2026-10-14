@@ -8,7 +8,7 @@ main :: proc() {
 	args := os.args
 
 	if len(args) < 3 {
-		fmt.println("usage: inference-odin.out worker <port> | router <port> <worker ports...>")
+		fmt.println("usage: fala worker <port> | router <port> <worker ports...>")
 		return
 	}
 
@@ -25,7 +25,7 @@ main :: proc() {
 
 	if args[1] == "router" {
 		if len(args) < 4 {
-			fmt.println("usage: inference-odin.out router <port> <worker ports...>")
+			fmt.println("usage: fala router <port> <worker ports...>")
 			return
 		}
 

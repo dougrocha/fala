@@ -1,10 +1,13 @@
 llama_dir := justfile_directory() / "vendor/llama.cpp"
 llama_build := llama_dir / "build"
 llama_bin := llama_build / "bin"
+# pinned llama.cpp commit; change it to upgrade
+llama_rev := "1ab7e5ad2d4e7295c94c3b966a3e0b70fa365865"
 
 # check bench and experiments, then build the binary
-build *args: check
-    odin build src -out:./inference-odin.out -collection:lib=./lib \
+build *args: llama-build check
+    mkdir -p builds
+    odin build src -out:./builds/fala -collection:lib=./lib \
         -extra-linker-flags:"-L{{llama_bin}} -Wl,-rpath,{{llama_bin}}" \
         {{args}}
 
@@ -13,16 +16,21 @@ check:
     odin check src/bench -no-entry-point -collection:lib=./lib
     odin check src/experiments -no-entry-point -collection:lib=./lib
 
-# clone or update llama.cpp at master and build it (CUDA when an NVIDIA GPU is present)
+# clone llama.cpp at llama_rev and build it (CUDA when an NVIDIA GPU is present); skip when already built at llama_rev
 llama-build:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ -d "{{llama_dir}}/.git" ]]; then
-        git -C "{{llama_dir}}" fetch --prune origin master
-        git -C "{{llama_dir}}" reset --hard origin/master
-    else
-        git clone --filter=blob:none --branch master https://github.com/ggml-org/llama.cpp "{{llama_dir}}"
+    stamp="{{llama_build}}/.rev"
+    if [[ -f "$stamp" && "$(cat "$stamp")" == "{{llama_rev}}" ]]; then
+        exit 0
     fi
+    if [[ ! -d "{{llama_dir}}/.git" ]]; then
+        git clone --filter=blob:none https://github.com/ggml-org/llama.cpp "{{llama_dir}}"
+    fi
+    if ! git -C "{{llama_dir}}" cat-file -e "{{llama_rev}}^{commit}" 2>/dev/null; then
+        git -C "{{llama_dir}}" fetch origin "{{llama_rev}}"
+    fi
+    git -C "{{llama_dir}}" checkout --detach "{{llama_rev}}"
     cmake_args=(-DCMAKE_BUILD_TYPE=Release)
     if lspci 2>/dev/null | grep -qi nvidia; then
         cmake_args+=(-DGGML_CUDA=ON)
@@ -30,6 +38,7 @@ llama-build:
     cmake -S "{{llama_dir}}" -B "{{llama_build}}" "${cmake_args[@]}"
     cmake --build "{{llama_build}}" -j
     "{{llama_bin}}/llama-server" --version
+    echo "{{llama_rev}}" > "$stamp"
 
 # start llama-server with a model (default: Qwen3 1.7B Q8_0)
 llama model="models/Qwen3-1.7B-Q8_0.gguf":
@@ -42,4 +51,4 @@ llama model="models/Qwen3-1.7B-Q8_0.gguf":
 
 # build, then run the binary (example: just run worker 8081)
 run *args: build
-    ./inference-odin.out {{args}}
+    ./builds/fala {{args}}
